@@ -10,74 +10,143 @@ import org.slf4j.LoggerFactory;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
+import org.springframework.context.ApplicationContext;
 import org.springframework.context.annotation.Bean;
-import org.springframework.context.annotation.ComponentScan;
 import org.springframework.jdbc.core.JdbcTemplate;
 
 /**
- * Auto-configuration for the alert-util-library.
+ * Auto-configuration for alert-util-library.
+ *
+ * Activated automatically when the library jar is on the classpath,
+ * via: META-INF/spring/org.springframework.boot.autoconfigure.AutoConfiguration.imports
  *
  * The consuming app MUST configure in application.yml:
+ *
  *   alert-util:
- *     view-name: v_alert_json_myapp              # REQUIRED
- *     schema-path: schema/my-alert-schema.json   # REQUIRED — file in consuming app's classpath
- *     alert-id-column: alert_id                  # optional, default: alert_id
- *     json-column: alert_json                    # optional, default: alert_json
+ *     db-name: alertDb                         # REQUIRED
+ *     view-name: v_alert_json_myapp            # REQUIRED
+ *     schema-map:                              # REQUIRED
+ *       10000: schema/schema-10000.json
+ *       20000: schema/schema-20000.json
+ *
+ * The consuming app MUST register a JdbcTemplate bean named {dbName}JdbcTemplate.
+ * e.g. for db-name=alertDb → register a bean named "alertDbJdbcTemplate"
  */
 @AutoConfiguration
 @EnableConfigurationProperties(AlertUtilProperties.class)
-@ComponentScan(basePackages = "com.example.alertutil")
 public class AlertUtilAutoConfiguration {
 
     private static final Logger log = LoggerFactory.getLogger(AlertUtilAutoConfiguration.class);
 
+    /**
+     * Loads and compiles all JSON schemas at startup.
+     * Fails fast if any schema file is missing or schema-map is not configured.
+     */
     @Bean
     @ConditionalOnMissingBean
     public JsonSchemaValidator jsonSchemaValidator(AlertUtilProperties properties) {
-        validateRequiredProperties(properties);
-        log.info("alert-util: Loading JSON schema from consuming app classpath [{}]", properties.getSchemaPath());
-        return new JsonSchemaValidator(properties.getSchemaPath());
+        validateProperties(properties);
+        log.info("alert-util: Initialising JsonSchemaValidator for types: {}",
+                properties.getSchemaMap().keySet());
+        return new JsonSchemaValidator(
+                properties.getSchemaMap(),
+                properties.getAlertTypeField()
+        );
     }
 
+    /**
+     * Creates AlertRepository using the JdbcTemplate resolved from ApplicationContext
+     * by the name: {dbName}JdbcTemplate.
+     *
+     * e.g. alert-util.db-name=alertDb → looks for bean "alertDbJdbcTemplate"
+     *
+     * This allows the consuming app to have multiple datasources and tell the library
+     * exactly which one to use, just by setting db-name in application.yml.
+     */
     @Bean
     @ConditionalOnMissingBean
-    public AlertRepository alertRepository(JdbcTemplate jdbcTemplate,
-                                           AlertUtilProperties properties) {
-        log.info("alert-util: Configuring AlertRepository with view [{}]", properties.getViewName());
+    public AlertRepository alertRepository(AlertUtilProperties properties,
+                                           ApplicationContext context) {
+        String jdbcBeanName = properties.getDbName() + "JdbcTemplate";
+        log.info("alert-util: Resolving JdbcTemplate bean [{}] for db [{}]",
+                jdbcBeanName, properties.getDbName());
+
+        JdbcTemplate jdbcTemplate = resolveJdbcTemplate(context, jdbcBeanName, properties.getDbName());
+
+        log.info("alert-util: AlertRepository configured — db: [{}], view: [{}]",
+                properties.getDbName(), properties.getViewName());
         return new AlertRepository(jdbcTemplate, properties);
     }
 
+    /**
+     * Creates the main AlertService that the consuming app injects and uses.
+     */
     @Bean
     @ConditionalOnMissingBean
     public AlertService alertService(AlertRepository alertRepository,
                                      JsonSchemaValidator jsonSchemaValidator,
                                      ObjectMapper objectMapper) {
-        log.info("alert-util: AlertService initialised");
+        log.info("alert-util: AlertService ready");
         return new AlertService(alertRepository, jsonSchemaValidator, objectMapper);
     }
 
+    // -------------------------------------------------------------------------
+    // Private helpers
+    // -------------------------------------------------------------------------
+
     /**
-     * Fail fast at startup if required properties are missing,
-     * with a clear actionable message pointing to what the consuming app must configure.
+     * Looks up the JdbcTemplate by bean name from the ApplicationContext.
+     * Throws a clear, actionable error if it cannot be found.
      */
-    private void validateRequiredProperties(AlertUtilProperties properties) {
+    private JdbcTemplate resolveJdbcTemplate(ApplicationContext context,
+                                              String beanName,
+                                              String dbName) {
+        try {
+            return context.getBean(beanName, JdbcTemplate.class);
+        } catch (Exception e) {
+            throw new IllegalStateException(
+                "\n[alert-util] Could not find JdbcTemplate bean named [" + beanName + "].\n"
+                + "You set alert-util.db-name=" + dbName + "\n"
+                + "The library expects a JdbcTemplate bean named [" + beanName + "] "
+                + "to be registered in the consuming application.\n\n"
+                + "Fix: Register this bean in your DataSource config class:\n\n"
+                + "  @Bean\n"
+                + "  public JdbcTemplate " + beanName + "(\n"
+                + "          @Qualifier(\"" + dbName + "DataSource\") DataSource dataSource) {\n"
+                + "      return new JdbcTemplate(dataSource);\n"
+                + "  }\n\n"
+                + "Or if using MultiDataSourceConfig, ensure 'app.datasources." + dbName + "' is configured."
+            );
+        }
+    }
+
+    /**
+     * Validates all required properties are present.
+     * Fails at startup with a clear message listing everything missing.
+     */
+    private void validateProperties(AlertUtilProperties properties) {
         StringBuilder errors = new StringBuilder();
 
-        if (isBlank(properties.getViewName())) {
-            errors.append("\n  - 'alert-util.view-name' is required. Set it to your app-specific DB view name.");
-        }
-        if (isBlank(properties.getSchemaPath())) {
-            errors.append("\n  - 'alert-util.schema-path' is required. Point it to your JSON schema file on the classpath.");
-        }
+        if (isBlank(properties.getDbName()))
+            errors.append("\n  - alert-util.db-name is required");
+
+        if (isBlank(properties.getViewName()))
+            errors.append("\n  - alert-util.view-name is required");
+
+        if (properties.getSchemaMap() == null || properties.getSchemaMap().isEmpty())
+            errors.append("\n  - alert-util.schema-map is required (at least one entry)");
 
         if (!errors.isEmpty()) {
             throw new IllegalStateException(
-                "[alert-util] Missing required configuration. Add the following to your application.yml:"
-                + errors
-                + "\n\nExample:"
-                + "\n  alert-util:"
-                + "\n    view-name: v_alert_json_myapp"
-                + "\n    schema-path: schema/my-alert-schema.json"
+                "\n[alert-util] Missing required configuration:" + errors
+                + "\n\nAdd the following to your application.yml:\n\n"
+                + "  alert-util:\n"
+                + "    db-name: alertDb\n"
+                + "    view-name: v_alert_json_myapp\n"
+                + "    alert-type-field: alertType\n"
+                + "    schema-map:\n"
+                + "      10000: schema/schema-10000.json\n"
+                + "      20000: schema/schema-20000.json\n"
             );
         }
     }

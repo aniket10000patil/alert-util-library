@@ -1,12 +1,17 @@
 package com.example.alertutil.exception;
 
 /**
- * Thrown when the DB view returns a value that cannot be parsed as valid JSON.
- * This typically means the view's SQL conversion logic has an issue.
+ * Thrown when the DB view returns data that cannot be processed.
+ * Examples: malformed JSON, CLOB read failure.
  */
 public class AlertProcessingException extends RuntimeException {
 
+    private final String alertId;
+
     public AlertProcessingException(String alertId, String reason, Throwable cause) {
         super("Failed to process alert [" + alertId + "]: " + reason, cause);
+        this.alertId = alertId;
     }
+
+    public String getAlertId() { return alertId; }
 }

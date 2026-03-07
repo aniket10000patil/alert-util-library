@@ -3,10 +3,8 @@ package com.example.alertutil.model;
 import com.fasterxml.jackson.databind.JsonNode;
 
 /**
- * The result returned to the consuming application after:
- *  1. Fetching HTML from DB
- *  2. Converting HTML → JSON
- *  3. Validating JSON against schema
+ * Returned to the consuming application after successful processing.
+ * Contains the alertId and the fully validated JSON.
  */
 public class AlertResult {
 
@@ -15,11 +13,11 @@ public class AlertResult {
 
     public AlertResult(String alertId, JsonNode json) {
         this.alertId = alertId;
-        this.json = json;
+        this.json    = json;
     }
 
-    public String getAlertId() { return alertId; }
-    public JsonNode getJson()  { return json; }
+    public String   getAlertId() { return alertId; }
+    public JsonNode getJson()    { return json; }
 
     @Override
     public String toString() {

@@ -6,21 +6,21 @@ import com.example.alertutil.exception.AlertProcessingException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.stereotype.Repository;
 
 import java.io.Reader;
 import java.sql.Clob;
 
 /**
- * Queries the application-specific DB view to retrieve a JSON string for the given alertId.
+ * Queries the configured DB view to fetch alert JSON by alertId.
+ *
+ * The view is responsible for HTML → JSON conversion.
+ * This class simply reads whatever the view returns.
  *
  * Handles both VARCHAR/TEXT and CLOB column types transparently.
- * The view is responsible for the HTML → JSON conversion.
  *
  * SQL executed:
- *   SELECT <json-column> FROM <view-name> WHERE <alert-id-column> = ?
+ *   SELECT {jsonColumn} FROM {viewName} WHERE {alertIdColumn} = ?
  */
-@Repository
 public class AlertRepository {
 
     private static final Logger log = LoggerFactory.getLogger(AlertRepository.class);
@@ -30,20 +30,20 @@ public class AlertRepository {
 
     public AlertRepository(JdbcTemplate jdbcTemplate, AlertUtilProperties properties) {
         this.jdbcTemplate = jdbcTemplate;
-        this.properties = properties;
+        this.properties   = properties;
     }
 
     /**
      * Fetches the JSON string from the configured DB view for the given alertId.
      *
-     * Handles column types:
+     * Supports:
      *  - VARCHAR / TEXT  → read directly as String
-     *  - CLOB            → streamed via Reader to avoid truncation
+     *  - CLOB            → streamed via Reader to avoid truncation on large payloads
      *
      * @param alertId the alert identifier
-     * @return full JSON string from the view's json column
-     * @throws AlertNotFoundException   if no row is found for the given alertId
-     * @throws AlertProcessingException if the CLOB content cannot be read
+     * @return full JSON string from the view
+     * @throws AlertNotFoundException   if no row found for alertId
+     * @throws AlertProcessingException if CLOB cannot be read
      */
     public String fetchJsonByAlertId(String alertId) {
         String sql = String.format(
@@ -53,14 +53,14 @@ public class AlertRepository {
                 properties.getAlertIdColumn()
         );
 
-        log.debug("Executing view query: [{}] with alertId: [{}]", sql, alertId);
+        log.debug("Querying view [{}] for alertId [{}]", properties.getViewName(), alertId);
 
-        // ResultSetExtractor gives direct control over ResultSet —
-        // we inspect the actual Java type returned by the JDBC driver
+        // ResultSetExtractor gives us direct control over the ResultSet.
+        // We inspect the actual Java type returned by the JDBC driver
         // so we can handle both VARCHAR (String) and CLOB transparently.
         String result = jdbcTemplate.query(sql, rs -> {
             if (!rs.next()) {
-                return null; // no row found
+                return null;  // no row found — handled below
             }
 
             Object value = rs.getObject(1);
@@ -69,7 +69,7 @@ public class AlertRepository {
                 return null;
             }
 
-            // CLOB — stream the full content to avoid driver-level truncation
+            // CLOB — stream the full content to avoid truncation
             if (value instanceof Clob clob) {
                 return readClob(alertId, clob);
             }
@@ -90,8 +90,12 @@ public class AlertRepository {
     /**
      * Streams full CLOB content into a String via its Reader.
      *
-     * Avoids truncation that can occur with clob.getSubString() on large payloads.
      * Uses a 4KB buffer for efficient reading.
+     * Avoids truncation that can occur with clob.getSubString() on large payloads.
+     *
+     * @param alertId used for error reporting only
+     * @param clob    the CLOB object returned by the JDBC driver
+     * @return full CLOB content as a String
      */
     private String readClob(String alertId, Clob clob) {
         try (Reader reader = clob.getCharacterStream()) {
