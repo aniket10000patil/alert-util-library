@@ -34,26 +34,27 @@ public class AlertRepository {
     }
 
     /**
-     * Fetches the JSON string from the configured DB view for the given alertId.
+     * Fetches the JSON string from the given DB view for the given alertId.
      *
      * Supports:
      *  - VARCHAR / TEXT  → read directly as String
      *  - CLOB            → streamed via Reader to avoid truncation on large payloads
      *
-     * @param alertId the alert identifier
+     * @param alertId  the alert identifier
+     * @param viewName the DB view to query
      * @return full JSON string from the view
      * @throws AlertNotFoundException   if no row found for alertId
      * @throws AlertProcessingException if CLOB cannot be read
      */
-    public String fetchJsonByAlertId(String alertId) {
+    public String fetchJsonByAlertId(String alertId, String viewName) {
         String sql = String.format(
                 "SELECT %s FROM %s WHERE %s = ?",
                 properties.getJsonColumn(),
-                properties.getViewName(),
+                viewName,
                 properties.getAlertIdColumn()
         );
 
-        log.debug("Querying view [{}] for alertId [{}]", properties.getViewName(), alertId);
+        log.debug("Querying view [{}] for alertId [{}]", viewName, alertId);
 
         // ResultSetExtractor gives us direct control over the ResultSet.
         // We inspect the actual Java type returned by the JDBC driver
