@@ -32,17 +32,21 @@ class AlertServiceTest {
     @Mock
     private JsonSchemaValidator jsonSchemaValidator;
 
-    private AlertService alertService;
-
     private final ObjectMapper objectMapper = new ObjectMapper();
+
+    private AlertService alertService;
 
     @BeforeEach
     void setUp() {
         alertService = new AlertService(alertRepository, jsonSchemaValidator, objectMapper);
     }
 
+    // -------------------------------------------------------------------------
+    // Happy path
+    // -------------------------------------------------------------------------
+
     @Test
-    void processAlert_happyPath_returnsValidatedResult() throws Exception {
+    void processAlert_happyPath_returnsValidatedResult() {
         String alertId = "ALERT-001";
         String jsonFromView = """
                 {
@@ -65,6 +69,10 @@ class AlertServiceTest {
         verify(alertRepository).fetchJsonByAlertId(alertId);
         verify(jsonSchemaValidator).validate(eq(alertId), any(JsonNode.class));
     }
+
+    // -------------------------------------------------------------------------
+    // Error cases
+    // -------------------------------------------------------------------------
 
     @Test
     void processAlert_alertNotFound_throwsAlertNotFoundException() {
@@ -103,5 +111,28 @@ class AlertServiceTest {
         assertThatThrownBy(() -> alertService.processAlert(alertId))
                 .isInstanceOf(AlertValidationException.class)
                 .hasMessageContaining("$.title: is missing");
+    }
+
+    // -------------------------------------------------------------------------
+    // Multiple alerts processed independently
+    // -------------------------------------------------------------------------
+
+    @Test
+    void processAlert_multipleAlerts_eachProcessedIndependently() {
+        String json1 = "{\"alertId\":\"A-1\",\"alertType\":\"10000\",\"title\":\"Alert 1\"}";
+        String json2 = "{\"alertId\":\"A-2\",\"alertType\":\"20000\",\"title\":\"Alert 2\"}";
+
+        when(alertRepository.fetchJsonByAlertId("A-1")).thenReturn(json1);
+        when(alertRepository.fetchJsonByAlertId("A-2")).thenReturn(json2);
+        doNothing().when(jsonSchemaValidator).validate(any(), any(JsonNode.class));
+
+        AlertResult result1 = alertService.processAlert("A-1");
+        AlertResult result2 = alertService.processAlert("A-2");
+
+        assertThat(result1.getJson().get("title").asText()).isEqualTo("Alert 1");
+        assertThat(result2.getJson().get("title").asText()).isEqualTo("Alert 2");
+
+        verify(alertRepository).fetchJsonByAlertId("A-1");
+        verify(alertRepository).fetchJsonByAlertId("A-2");
     }
 }

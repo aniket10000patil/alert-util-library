@@ -14,23 +14,31 @@ import org.springframework.context.ApplicationContext;
 import org.springframework.context.annotation.Bean;
 import org.springframework.jdbc.core.JdbcTemplate;
 
+import javax.sql.DataSource;
+
 /**
  * Auto-configuration for alert-util-library.
  *
  * Activated automatically when the library jar is on the classpath,
  * via: META-INF/spring/org.springframework.boot.autoconfigure.AutoConfiguration.imports
  *
- * The consuming app MUST configure in application.yml:
+ * Required configuration in the consuming app's application.yml:
  *
  *   alert-util:
- *     db-name: alertDb                         # REQUIRED
- *     view-name: v_alert_json_myapp            # REQUIRED
- *     schema-map:                              # REQUIRED
+ *     db-name: alertDb                         # name of a DataSource bean in the app context
+ *     view-name: v_alert_json_myapp            # DB view to query
+ *     schema-map:
  *       10000: schema/schema-10000.json
  *       20000: schema/schema-20000.json
  *
- * The consuming app MUST register a JdbcTemplate bean named {dbName}JdbcTemplate.
- * e.g. for db-name=alertDb → register a bean named "alertDbJdbcTemplate"
+ * The consuming app must have a DataSource bean whose name matches db-name.
+ * For example, if using Spring's default single-datasource setup:
+ *
+ *   @Bean("alertDb")
+ *   @ConfigurationProperties("spring.datasource")
+ *   public DataSource alertDbDataSource() { ... }
+ *
+ * Or in a multi-datasource setup, any bean named "alertDb" that is a DataSource.
  */
 @AutoConfiguration
 @EnableConfigurationProperties(AlertUtilProperties.class)
@@ -55,26 +63,26 @@ public class AlertUtilAutoConfiguration {
     }
 
     /**
-     * Creates AlertRepository using the JdbcTemplate resolved from ApplicationContext
-     * by the name: {dbName}JdbcTemplate.
+     * Creates AlertRepository by resolving the DataSource bean from the app context.
      *
-     * e.g. alert-util.db-name=alertDb → looks for bean "alertDbJdbcTemplate"
+     * The library creates its own JdbcTemplate from the resolved DataSource.
+     * This way the consuming app only needs to define a DataSource bean — no need
+     * to manually register a JdbcTemplate for the library.
      *
-     * This allows the consuming app to have multiple datasources and tell the library
-     * exactly which one to use, just by setting db-name in application.yml.
+     * e.g. alert-util.db-name=alertDb → looks for a DataSource bean named "alertDb"
      */
     @Bean
     @ConditionalOnMissingBean
     public AlertRepository alertRepository(AlertUtilProperties properties,
                                            ApplicationContext context) {
-        String jdbcBeanName = properties.getDbName() + "JdbcTemplate";
-        log.info("alert-util: Resolving JdbcTemplate bean [{}] for db [{}]",
-                jdbcBeanName, properties.getDbName());
+        String dbName = properties.getDbName();
+        log.info("alert-util: Resolving DataSource bean [{}]", dbName);
 
-        JdbcTemplate jdbcTemplate = resolveJdbcTemplate(context, jdbcBeanName, properties.getDbName());
+        DataSource dataSource = resolveDataSource(context, dbName);
+        JdbcTemplate jdbcTemplate = new JdbcTemplate(dataSource);
 
         log.info("alert-util: AlertRepository configured — db: [{}], view: [{}]",
-                properties.getDbName(), properties.getViewName());
+                dbName, properties.getViewName());
         return new AlertRepository(jdbcTemplate, properties);
     }
 
@@ -95,27 +103,26 @@ public class AlertUtilAutoConfiguration {
     // -------------------------------------------------------------------------
 
     /**
-     * Looks up the JdbcTemplate by bean name from the ApplicationContext.
+     * Looks up the DataSource by bean name from the ApplicationContext.
      * Throws a clear, actionable error if it cannot be found.
      */
-    private JdbcTemplate resolveJdbcTemplate(ApplicationContext context,
-                                              String beanName,
-                                              String dbName) {
+    private DataSource resolveDataSource(ApplicationContext context, String dbName) {
         try {
-            return context.getBean(beanName, JdbcTemplate.class);
+            return context.getBean(dbName, DataSource.class);
         } catch (Exception e) {
             throw new IllegalStateException(
-                "\n[alert-util] Could not find JdbcTemplate bean named [" + beanName + "].\n"
+                "\n[alert-util] Could not find DataSource bean named [" + dbName + "].\n"
                 + "You set alert-util.db-name=" + dbName + "\n"
-                + "The library expects a JdbcTemplate bean named [" + beanName + "] "
-                + "to be registered in the consuming application.\n\n"
-                + "Fix: Register this bean in your DataSource config class:\n\n"
-                + "  @Bean\n"
-                + "  public JdbcTemplate " + beanName + "(\n"
-                + "          @Qualifier(\"" + dbName + "DataSource\") DataSource dataSource) {\n"
-                + "      return new JdbcTemplate(dataSource);\n"
+                + "The library expects a DataSource bean with this name in your Spring context.\n\n"
+                + "Fix: Register a DataSource bean in your config class:\n\n"
+                + "  @Bean(\"" + dbName + "\")\n"
+                + "  @ConfigurationProperties(\"spring.datasource\")\n"
+                + "  public DataSource " + dbName + "DataSource() {\n"
+                + "      return DataSourceBuilder.create().build();\n"
                 + "  }\n\n"
-                + "Or if using MultiDataSourceConfig, ensure 'app.datasources." + dbName + "' is configured."
+                + "Or if you have a multi-datasource setup, ensure one of your\n"
+                + "DataSource beans is named [" + dbName + "].\n",
+                e
             );
         }
     }
@@ -141,9 +148,8 @@ public class AlertUtilAutoConfiguration {
                 "\n[alert-util] Missing required configuration:" + errors
                 + "\n\nAdd the following to your application.yml:\n\n"
                 + "  alert-util:\n"
-                + "    db-name: alertDb\n"
-                + "    view-name: v_alert_json_myapp\n"
-                + "    alert-type-field: alertType\n"
+                + "    db-name: alertDb               # name of your DataSource bean\n"
+                + "    view-name: v_alert_json_myapp   # DB view to query\n"
                 + "    schema-map:\n"
                 + "      10000: schema/schema-10000.json\n"
                 + "      20000: schema/schema-20000.json\n"

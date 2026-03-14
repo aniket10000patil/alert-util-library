@@ -31,19 +31,20 @@ public class AlertService {
     private static final Logger log = LoggerFactory.getLogger(AlertService.class);
 
     private final AlertRepository     alertRepository;
-    private final JsonSchemaValidator jsonSchemaValidator;
-    private final ObjectMapper        objectMapper;
+    private final JsonSchemaValidator  jsonSchemaValidator;
+    private final ObjectMapper         objectMapper;
 
     public AlertService(AlertRepository alertRepository,
                         JsonSchemaValidator jsonSchemaValidator,
                         ObjectMapper objectMapper) {
         this.alertRepository     = alertRepository;
         this.jsonSchemaValidator  = jsonSchemaValidator;
-        this.objectMapper         = objectMapper;
+        this.objectMapper        = objectMapper;
     }
 
     /**
-     * Processes an alert end-to-end.
+     * Processes an alert: fetches JSON from the DB view, parses it,
+     * validates against the appropriate schema, and returns the result.
      *
      * @param alertId the unique alert identifier
      * @return AlertResult containing the validated JsonNode
@@ -56,7 +57,7 @@ public class AlertService {
         log.info("Processing alert [{}]", alertId);
 
         // Step 1 — query the DB view
-        log.debug("Step 1 - Querying view for alertId [{}]", alertId);
+        log.debug("Step 1 - Fetching JSON for alertId [{}]", alertId);
         String jsonString = alertRepository.fetchJsonByAlertId(alertId);
 
         // Step 2 — parse JSON string into JsonNode
