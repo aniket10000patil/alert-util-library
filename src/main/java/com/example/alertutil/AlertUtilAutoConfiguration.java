@@ -27,9 +27,7 @@ import javax.sql.DataSource;
  *   alert-util:
  *     db-name: alertDb                         # name of a DataSource bean in the app context
  *     view-name: v_alert_json_myapp            # DB view to query
- *     schema-map:
- *       10000: schema/schema-10000.json
- *       20000: schema/schema-20000.json
+ *     schema-path: schema/alert-schema.json    # classpath path to JSON schema
  *
  * The consuming app must have a DataSource bean whose name matches db-name.
  * For example, if using Spring's default single-datasource setup:
@@ -47,19 +45,16 @@ public class AlertUtilAutoConfiguration {
     private static final Logger log = LoggerFactory.getLogger(AlertUtilAutoConfiguration.class);
 
     /**
-     * Loads and compiles all JSON schemas at startup.
-     * Fails fast if any schema file is missing or schema-map is not configured.
+     * Loads and compiles the JSON schema at startup.
+     * Fails fast if the schema file is missing or not configured.
      */
     @Bean
     @ConditionalOnMissingBean
     public JsonSchemaValidator jsonSchemaValidator(AlertUtilProperties properties) {
         validateProperties(properties);
-        log.info("alert-util: Initialising JsonSchemaValidator for types: {}",
-                properties.getSchemaMap().keySet());
-        return new JsonSchemaValidator(
-                properties.getSchemaMap(),
-                properties.getAlertTypeField()
-        );
+        log.info("alert-util: Initialising JsonSchemaValidator from [{}]",
+                properties.getSchemaPath());
+        return new JsonSchemaValidator(properties.getSchemaPath());
     }
 
     /**
@@ -140,19 +135,17 @@ public class AlertUtilAutoConfiguration {
         if (isBlank(properties.getViewName()))
             errors.append("\n  - alert-util.view-name is required");
 
-        if (properties.getSchemaMap() == null || properties.getSchemaMap().isEmpty())
-            errors.append("\n  - alert-util.schema-map is required (at least one entry)");
+        if (isBlank(properties.getSchemaPath()))
+            errors.append("\n  - alert-util.schema-path is required");
 
         if (!errors.isEmpty()) {
             throw new IllegalStateException(
                 "\n[alert-util] Missing required configuration:" + errors
                 + "\n\nAdd the following to your application.yml:\n\n"
                 + "  alert-util:\n"
-                + "    db-name: alertDb               # name of your DataSource bean\n"
-                + "    view-name: v_alert_json_myapp   # DB view to query\n"
-                + "    schema-map:\n"
-                + "      10000: schema/schema-10000.json\n"
-                + "      20000: schema/schema-20000.json\n"
+                + "    db-name: alertDb                      # name of your DataSource bean\n"
+                + "    view-name: v_alert_json_myapp          # DB view to query\n"
+                + "    schema-path: schema/alert-schema.json  # classpath path to JSON schema\n"
             );
         }
     }
