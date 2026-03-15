@@ -37,7 +37,6 @@ public class AlertService {
 
     private static final Logger log = LoggerFactory.getLogger(AlertService.class);
 
-<<<<<<< HEAD
     private final AlertRepository      alertRepository;
     private final JsonSchemaValidator   jsonSchemaValidator;
     private final ObjectMapper          objectMapper;
@@ -48,11 +47,6 @@ public class AlertService {
      * Populated lazily on first call per dbName, reused for all subsequent calls.
      */
     private final ConcurrentHashMap<String, JdbcTemplate> jdbcTemplateCache = new ConcurrentHashMap<>();
-=======
-    private final AlertRepository     alertRepository;
-    private final JsonSchemaValidator  jsonSchemaValidator;
-    private final ObjectMapper         objectMapper;
->>>>>>> 58191668cdb2e3dab86ff08ffef034712a2582f3
 
     public AlertService(AlertRepository alertRepository,
                         JsonSchemaValidator jsonSchemaValidator,
@@ -61,20 +55,12 @@ public class AlertService {
         this.alertRepository     = alertRepository;
         this.jsonSchemaValidator  = jsonSchemaValidator;
         this.objectMapper        = objectMapper;
-<<<<<<< HEAD
         this.applicationContext  = applicationContext;
     }
 
     /**
      * Processes an alert: resolves the database by name, queries the configured view,
      * parses and validates the JSON.
-=======
-    }
-
-    /**
-     * Processes an alert: fetches JSON from the DB view, parses it,
-     * validates against the appropriate schema, and returns the result.
->>>>>>> 58191668cdb2e3dab86ff08ffef034712a2582f3
      *
      * @param dbName  name of the DataSource bean in the Spring context (e.g. "primaryDb")
      * @param alertId the unique alert identifier
@@ -88,14 +74,8 @@ public class AlertService {
     public AlertResult processAlert(String dbName, String alertId) {
         log.info("Processing alert [{}] — db: [{}]", alertId, dbName);
 
-<<<<<<< HEAD
         // Step 1 — resolve JdbcTemplate (cached)
         JdbcTemplate jdbcTemplate = resolveJdbcTemplate(dbName);
-=======
-        // Step 1 — query the DB view
-        log.debug("Step 1 - Fetching JSON for alertId [{}]", alertId);
-        String jsonString = alertRepository.fetchJsonByAlertId(alertId);
->>>>>>> 58191668cdb2e3dab86ff08ffef034712a2582f3
 
         // Step 2 — query the DB view
         log.debug("Step 2 - Fetching JSON for alertId [{}]", alertId);

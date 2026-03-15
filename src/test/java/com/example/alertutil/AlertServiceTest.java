@@ -32,20 +32,13 @@ class AlertServiceTest {
     private static final String PRIMARY_DB   = "primaryDb";
     private static final String SECONDARY_DB = "secondaryDb";
 
-<<<<<<< HEAD
     @Mock private AlertRepository alertRepository;
     @Mock private JsonSchemaValidator jsonSchemaValidator;
     @Mock private ApplicationContext applicationContext;
     @Mock private DataSource primaryDataSource;
     @Mock private DataSource secondaryDataSource;
-=======
-    @Mock
-    private JsonSchemaValidator jsonSchemaValidator;
->>>>>>> 58191668cdb2e3dab86ff08ffef034712a2582f3
 
     private final ObjectMapper objectMapper = new ObjectMapper();
-    private AlertService alertService;
-
     private AlertService alertService;
 
     @BeforeEach
@@ -60,11 +53,8 @@ class AlertServiceTest {
 
     @Test
     void processAlert_happyPath_returnsValidatedResult() {
-<<<<<<< HEAD
         stubDataSource(PRIMARY_DB, primaryDataSource);
 
-=======
->>>>>>> 58191668cdb2e3dab86ff08ffef034712a2582f3
         String alertId = "ALERT-001";
         String jsonFromView = """
                 {
@@ -89,7 +79,6 @@ class AlertServiceTest {
     }
 
     // -------------------------------------------------------------------------
-<<<<<<< HEAD
     // Multiple databases
     // -------------------------------------------------------------------------
 
@@ -148,11 +137,6 @@ class AlertServiceTest {
                 .hasMessageContaining("unknownDb");
     }
 
-=======
-    // Error cases
-    // -------------------------------------------------------------------------
-
->>>>>>> 58191668cdb2e3dab86ff08ffef034712a2582f3
     @Test
     void processAlert_alertNotFound_throwsAlertNotFoundException() {
         stubDataSource(PRIMARY_DB, primaryDataSource);
@@ -197,33 +181,10 @@ class AlertServiceTest {
     }
 
     // -------------------------------------------------------------------------
-<<<<<<< HEAD
     // Helpers
     // -------------------------------------------------------------------------
 
     private void stubDataSource(String dbName, DataSource dataSource) {
         when(applicationContext.getBean(dbName, DataSource.class)).thenReturn(dataSource);
-=======
-    // Multiple alerts processed independently
-    // -------------------------------------------------------------------------
-
-    @Test
-    void processAlert_multipleAlerts_eachProcessedIndependently() {
-        String json1 = "{\"alertId\":\"A-1\",\"alertType\":\"10000\",\"title\":\"Alert 1\"}";
-        String json2 = "{\"alertId\":\"A-2\",\"alertType\":\"20000\",\"title\":\"Alert 2\"}";
-
-        when(alertRepository.fetchJsonByAlertId("A-1")).thenReturn(json1);
-        when(alertRepository.fetchJsonByAlertId("A-2")).thenReturn(json2);
-        doNothing().when(jsonSchemaValidator).validate(any(), any(JsonNode.class));
-
-        AlertResult result1 = alertService.processAlert("A-1");
-        AlertResult result2 = alertService.processAlert("A-2");
-
-        assertThat(result1.getJson().get("title").asText()).isEqualTo("Alert 1");
-        assertThat(result2.getJson().get("title").asText()).isEqualTo("Alert 2");
-
-        verify(alertRepository).fetchJsonByAlertId("A-1");
-        verify(alertRepository).fetchJsonByAlertId("A-2");
->>>>>>> 58191668cdb2e3dab86ff08ffef034712a2582f3
     }
 }

@@ -19,31 +19,15 @@ import java.util.stream.Collectors;
  * Validates alert JSON against a single JSON schema.
  *
  * The schema is loaded and compiled once at startup from the consuming app's classpath.
-<<<<<<< HEAD
-=======
- *
- * Flow:
- *   1. Receive parsed JsonNode from AlertService
- *   2. Validate against the compiled schema
- *   3. Throw AlertValidationException if errors found
->>>>>>> 58191668cdb2e3dab86ff08ffef034712a2582f3
  */
 public class JsonSchemaValidator {
 
     private static final Logger log = LoggerFactory.getLogger(JsonSchemaValidator.class);
 
-<<<<<<< HEAD
     private final JsonSchema compiledSchema;
 
     /**
      * @param schemaPath classpath path to the JSON schema file
-=======
-    /** Compiled schema — loaded once at startup, reused for every validation call. */
-    private final JsonSchema compiledSchema;
-
-    /**
-     * @param schemaPath classpath path to the JSON schema file (e.g. "schema/alert-schema.json")
->>>>>>> 58191668cdb2e3dab86ff08ffef034712a2582f3
      */
     public JsonSchemaValidator(String schemaPath) {
         this.compiledSchema = loadSchema(schemaPath);
@@ -76,16 +60,6 @@ public class JsonSchemaValidator {
     private JsonSchema loadSchema(String schemaPath) {
         log.info("alert-util: Loading schema from [{}]", schemaPath);
 
-<<<<<<< HEAD
-=======
-    /**
-     * Loads and compiles the JSON Schema from the consuming app's classpath.
-     * Fails fast at startup if the schema file is missing or unparseable.
-     */
-    private JsonSchema loadSchema(String schemaPath) {
-        log.info("alert-util: Loading schema from [{}]", schemaPath);
-
->>>>>>> 58191668cdb2e3dab86ff08ffef034712a2582f3
         try {
             ClassPathResource resource = new ClassPathResource(schemaPath);
 
