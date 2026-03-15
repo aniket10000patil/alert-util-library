@@ -12,9 +12,13 @@ import java.sql.Clob;
 /**
  * Queries the configured DB view to fetch alert JSON by alertId.
  *
+<<<<<<< HEAD
  * The view name and column names are fixed from config. The JdbcTemplate
  * (i.e. which database to hit) is passed per call by AlertService.
  *
+=======
+ * The view name and column names are read from {@link AlertUtilProperties}.
+>>>>>>> 58191668cdb2e3dab86ff08ffef034712a2582f3
  * Handles both VARCHAR/TEXT and CLOB column types transparently.
  *
  * SQL executed:
@@ -24,22 +28,42 @@ public class AlertRepository {
 
     private static final Logger log = LoggerFactory.getLogger(AlertRepository.class);
 
+<<<<<<< HEAD
+=======
+    private final JdbcTemplate jdbcTemplate;
+>>>>>>> 58191668cdb2e3dab86ff08ffef034712a2582f3
     private final String viewName;
     private final String alertIdColumn;
     private final String jsonColumn;
 
+<<<<<<< HEAD
     public AlertRepository(String viewName, String alertIdColumn, String jsonColumn) {
         this.viewName      = viewName;
         this.alertIdColumn = alertIdColumn;
         this.jsonColumn    = jsonColumn;
+=======
+    public AlertRepository(JdbcTemplate jdbcTemplate, AlertUtilProperties properties) {
+        this.jdbcTemplate  = jdbcTemplate;
+        this.viewName      = properties.getViewName();
+        this.alertIdColumn = properties.getAlertIdColumn();
+        this.jsonColumn    = properties.getJsonColumn();
+>>>>>>> 58191668cdb2e3dab86ff08ffef034712a2582f3
     }
 
     /**
      * Fetches the JSON string from the configured view for the given alertId,
      * using the provided JdbcTemplate (which is bound to a specific DataSource).
      *
+<<<<<<< HEAD
      * @param jdbcTemplate the JdbcTemplate for the target database
      * @param alertId      the alert identifier
+=======
+     * Supports:
+     *  - VARCHAR / TEXT  → read directly as String
+     *  - CLOB            → streamed via Reader to avoid truncation on large payloads
+     *
+     * @param alertId  the alert identifier
+>>>>>>> 58191668cdb2e3dab86ff08ffef034712a2582f3
      * @return full JSON string from the view
      * @throws AlertNotFoundException   if no row found for alertId
      * @throws AlertProcessingException if CLOB cannot be read
@@ -86,6 +110,10 @@ public class AlertRepository {
     /**
      * Streams full CLOB content into a String via its Reader.
      * Uses a 4KB buffer for efficient reading.
+<<<<<<< HEAD
+=======
+     * Avoids truncation that can occur with clob.getSubString() on large payloads.
+>>>>>>> 58191668cdb2e3dab86ff08ffef034712a2582f3
      */
     private String readClob(String alertId, Clob clob) {
         try (Reader reader = clob.getCharacterStream()) {
