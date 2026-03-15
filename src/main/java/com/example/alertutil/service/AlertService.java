@@ -8,67 +8,122 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.context.ApplicationContext;
+import org.springframework.jdbc.core.JdbcTemplate;
+
+import javax.sql.DataSource;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Main entry point for the consuming application.
  *
- * Orchestrates the full alert processing pipeline:
- *   1. Query the configured DB view by alertId → returns JSON string
- *   2. Parse the JSON string into a JsonNode
- *   3. Extract alert type from JSON, validate against matching schema
- *   4. Return AlertResult to the caller
+ * A single AlertService bean that can work with multiple databases.
+ * The caller passes only the dbName at runtime — the view name is
+ * configured once in application.yml and is the same across all databases.
  *
- * Usage in the consuming app:
+ * Usage:
  *
- *   @Autowired
- *   private AlertService alertService;
+ *   alertService.processAlert("primaryDb",   "ALERT-001");
+ *   alertService.processAlert("secondaryDb", "ALERT-002");
  *
- *   AlertResult result = alertService.processAlert("ALERT-001");
- *   JsonNode json = result.getJson();
+ * Pipeline:
+ *   1. Resolve JdbcTemplate for the given dbName (cached after first lookup)
+ *   2. Query the configured view by alertId → returns JSON string
+ *   3. Parse the JSON string into a JsonNode
+ *   4. Validate against the compiled schema
+ *   5. Return AlertResult to the caller
  */
 public class AlertService {
 
     private static final Logger log = LoggerFactory.getLogger(AlertService.class);
 
-    private final AlertRepository     alertRepository;
-    private final JsonSchemaValidator jsonSchemaValidator;
-    private final ObjectMapper        objectMapper;
+    private final AlertRepository      alertRepository;
+    private final JsonSchemaValidator   jsonSchemaValidator;
+    private final ObjectMapper          objectMapper;
+    private final ApplicationContext    applicationContext;
+
+    /**
+     * Cache of dbName → JdbcTemplate.
+     * Populated lazily on first call per dbName, reused for all subsequent calls.
+     */
+    private final ConcurrentHashMap<String, JdbcTemplate> jdbcTemplateCache = new ConcurrentHashMap<>();
 
     public AlertService(AlertRepository alertRepository,
                         JsonSchemaValidator jsonSchemaValidator,
-                        ObjectMapper objectMapper) {
+                        ObjectMapper objectMapper,
+                        ApplicationContext applicationContext) {
         this.alertRepository     = alertRepository;
         this.jsonSchemaValidator  = jsonSchemaValidator;
-        this.objectMapper         = objectMapper;
+        this.objectMapper        = objectMapper;
+        this.applicationContext  = applicationContext;
     }
 
     /**
-     * Processes an alert end-to-end.
+     * Processes an alert: resolves the database by name, queries the configured view,
+     * parses and validates the JSON.
      *
+     * @param dbName  name of the DataSource bean in the Spring context (e.g. "primaryDb")
      * @param alertId the unique alert identifier
      * @return AlertResult containing the validated JsonNode
      *
+     * @throws IllegalStateException if no DataSource bean found for dbName
      * @throws com.example.alertutil.exception.AlertNotFoundException   if no row found in DB view
      * @throws com.example.alertutil.exception.AlertValidationException if JSON fails schema validation
      * @throws com.example.alertutil.exception.AlertProcessingException if DB view returns malformed JSON
      */
-    public AlertResult processAlert(String alertId) {
-        log.info("Processing alert [{}]", alertId);
+    public AlertResult processAlert(String dbName, String alertId) {
+        log.info("Processing alert [{}] — db: [{}]", alertId, dbName);
 
-        // Step 1 — query the DB view
-        log.debug("Step 1 - Querying view for alertId [{}]", alertId);
-        String jsonString = alertRepository.fetchJsonByAlertId(alertId);
+        // Step 1 — resolve JdbcTemplate (cached)
+        JdbcTemplate jdbcTemplate = resolveJdbcTemplate(dbName);
 
-        // Step 2 — parse JSON string into JsonNode
-        log.debug("Step 2 - Parsing JSON for alertId [{}]", alertId);
+        // Step 2 — query the DB view
+        log.debug("Step 2 - Fetching JSON for alertId [{}]", alertId);
+        String jsonString = alertRepository.fetchJsonByAlertId(jdbcTemplate, alertId);
+
+        // Step 3 — parse JSON string into JsonNode
+        log.debug("Step 3 - Parsing JSON for alertId [{}]", alertId);
         JsonNode json = parseJson(alertId, jsonString);
 
-        // Step 3 — validate against the schema for this alert type
-        log.debug("Step 3 - Validating alertId [{}]", alertId);
+        // Step 4 — validate against schema
+        log.debug("Step 4 - Validating alertId [{}]", alertId);
         jsonSchemaValidator.validate(alertId, json);
 
         log.info("Alert [{}] processed successfully", alertId);
         return new AlertResult(alertId, json);
+    }
+
+    // -------------------------------------------------------------------------
+    // Private helpers
+    // -------------------------------------------------------------------------
+
+    /**
+     * Resolves a JdbcTemplate for the given dbName.
+     *
+     * On first call: looks up the DataSource bean from ApplicationContext, wraps it
+     * in a JdbcTemplate, and caches it.
+     * On subsequent calls: returns the cached JdbcTemplate.
+     */
+    private JdbcTemplate resolveJdbcTemplate(String dbName) {
+        return jdbcTemplateCache.computeIfAbsent(dbName, name -> {
+            log.info("alert-util: Resolving DataSource bean [{}] (first use)", name);
+            try {
+                DataSource dataSource = applicationContext.getBean(name, DataSource.class);
+                return new JdbcTemplate(dataSource);
+            } catch (Exception e) {
+                throw new IllegalStateException(
+                    "\n[alert-util] Could not find DataSource bean named [" + name + "].\n"
+                    + "The library expects a DataSource bean with this name in your Spring context.\n\n"
+                    + "Fix: Register a DataSource bean in your config class:\n\n"
+                    + "  @Bean(\"" + name + "\")\n"
+                    + "  @ConfigurationProperties(\"app.datasources." + name + "\")\n"
+                    + "  public DataSource " + name + "DataSource() {\n"
+                    + "      return DataSourceBuilder.create().build();\n"
+                    + "  }\n",
+                    e
+                );
+            }
+        });
     }
 
     private JsonNode parseJson(String alertId, String jsonString) {
