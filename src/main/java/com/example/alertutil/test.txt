@@ -1,0 +1,35 @@
+@Test
+void retrieveAlertJson_success() throws Exception {
+    String alertId = "ALERT-001";
+    String jsonString = "{\"alertId\":\"ALERT-001\",\"severity\":\"HIGH\"}";
+    JsonNode jsonNode = new ObjectMapper().readTree(jsonString);
+    AlertResult alertResult = new AlertResult(alertId, jsonNode);
+
+    when(alertService.processAlert("secondaryDataSource", "tmifc_appl_db", alertId))
+            .thenReturn(alertResult);
+
+    mockMvc.perform(get("/v1/bridge/sam8tocmt/alertDetails/{alertId}", alertId))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.data.alertId").value("ALERT-001"))
+            .andExpect(jsonPath("$.data.severity").value("HIGH"));
+
+    verify(alertService).processAlert("secondaryDataSource", "tmifc_appl_db", alertId);
+}
+
+@Test
+void retrieveHistoricalAlertJson_success() throws Exception {
+    String alertId = "ALERT-002";
+    String jsonString = "{\"alertId\":\"ALERT-002\",\"severity\":\"LOW\"}";
+    JsonNode jsonNode = new ObjectMapper().readTree(jsonString);
+    AlertResult alertResult = new AlertResult(alertId, jsonNode);
+
+    when(alertService.processAlert("primaryDataSource", "sam_custom", alertId))
+            .thenReturn(alertResult);
+
+    mockMvc.perform(get("/v1/bridge/sam8tocmt/alertDetails/historical/{alertId}", alertId))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.data.alertId").value("ALERT-002"))
+            .andExpect(jsonPath("$.data.severity").value("LOW"));
+
+    verify(alertService).processAlert("primaryDataSource", "sam_custom", alertId);
+}
