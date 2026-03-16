@@ -1,12 +1,12 @@
-package com.barclays.alertutil;
+package com.example.alertutil;
 
-import com.barclays.alertutil.exception.AlertNotFoundException;
-import com.barclays.alertutil.exception.AlertProcessingException;
-import com.barclays.alertutil.exception.AlertValidationException;
-import com.barclays.alertutil.model.AlertResult;
-import com.barclays.alertutil.repository.AlertRepository;
-import com.barclays.alertutil.service.AlertService;
-import com.barclays.alertutil.validator.JsonSchemaValidator;
+import com.example.alertutil.exception.AlertNotFoundException;
+import com.example.alertutil.exception.AlertProcessingException;
+import com.example.alertutil.exception.AlertValidationException;
+import com.example.alertutil.model.AlertResult;
+import com.example.alertutil.repository.AlertRepository;
+import com.example.alertutil.service.AlertService;
+import com.example.alertutil.validator.JsonSchemaValidator;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -38,3 +38,115 @@ class AlertServiceTest {
     private JdbcTemplate mockJdbcTemplate;
 
     private static final String DB_NAME = "testDb";
+    private static final String SCHEMA = "testSchema";
+    private static final String ALERT_ID = "ALERT-001";
+    private static final String VALID_JSON = """
+            {
+              "alertId": "ALERT-001",
+              "title": "Disk usage critical",
+              "severity": "HIGH"
+            }
+            """;
+
+    @BeforeEach
+    void setUp() {
+        alertService = spy(new AlertService(alertRepository, jsonSchemaValidator, objectMapper));
+        doReturn(mockJdbcTemplate).when(alertService).resolveJdbcTemplate(anyString());
+    }
+
+    @Test
+    void processAlert_success_returnsAlertResult() {
+        when(alertRepository.fetchJsonByAlertId(any(JdbcTemplate.class), anyString(), anyString()))
+                .thenReturn(VALID_JSON);
+        doNothing().when(jsonSchemaValidator).validate(anyString(), any());
+
+        AlertResult result = alertService.processAlert(DB_NAME, SCHEMA, ALERT_ID);
+
+        assertThat(result).isNotNull();
+        assertThat(result.getAlertId()).isEqualTo(ALERT_ID);
+        assertThat(result.getJson().get("severity").asText()).isEqualTo("HIGH");
+
+        verify(alertRepository).fetchJsonByAlertId(mockJdbcTemplate, SCHEMA, ALERT_ID);
+        verify(jsonSchemaValidator).validate(eq(ALERT_ID), any());
+        verify(alertService).resolveJdbcTemplate(DB_NAME);
+    }
+
+    @Test
+    void processAlert_alertNotFound_throwsAlertNotFoundException() {
+        when(alertRepository.fetchJsonByAlertId(any(JdbcTemplate.class), anyString(), anyString()))
+                .thenThrow(new AlertNotFoundException(ALERT_ID));
+
+        assertThatThrownBy(() -> alertService.processAlert(DB_NAME, SCHEMA, ALERT_ID))
+                .isInstanceOf(AlertNotFoundException.class)
+                .hasMessageContaining(ALERT_ID);
+
+        verifyNoInteractions(jsonSchemaValidator);
+    }
+
+    @Test
+    void processAlert_malformedJson_throwsAlertProcessingException() {
+        when(alertRepository.fetchJsonByAlertId(any(JdbcTemplate.class), anyString(), anyString()))
+                .thenReturn("NOT_VALID_JSON{{");
+
+        assertThatThrownBy(() -> alertService.processAlert(DB_NAME, SCHEMA, ALERT_ID))
+                .isInstanceOf(AlertProcessingException.class)
+                .hasMessageContaining("invalid JSON");
+
+        verifyNoInteractions(jsonSchemaValidator);
+    }
+
+    @Test
+    void processAlert_validationFails_throwsAlertValidationException() {
+        String minimalJson = "{\"alertId\": \"ALERT-001\"}";
+
+        when(alertRepository.fetchJsonByAlertId(any(JdbcTemplate.class), anyString(), anyString()))
+                .thenReturn(minimalJson);
+        doThrow(new AlertValidationException(ALERT_ID, Set.of("title is required")))
+                .when(jsonSchemaValidator).validate(eq(ALERT_ID), any());
+
+        assertThatThrownBy(() -> alertService.processAlert(DB_NAME, SCHEMA, ALERT_ID))
+                .isInstanceOf(AlertValidationException.class)
+                .hasMessageContaining("title is required");
+    }
+
+    @Test
+    void processAlert_sameDbCalledTwice_cachesJdbcTemplate() {
+        when(alertRepository.fetchJsonByAlertId(any(JdbcTemplate.class), anyString(), anyString()))
+                .thenReturn(VALID_JSON);
+        doNothing().when(jsonSchemaValidator).validate(anyString(), any());
+
+        alertService.processAlert(DB_NAME, SCHEMA, ALERT_ID);
+        alertService.processAlert(DB_NAME, SCHEMA, "ALERT-002");
+
+        verify(alertService, times(2)).resolveJdbcTemplate(DB_NAME);
+        verify(alertRepository, times(2)).fetchJsonByAlertId(any(JdbcTemplate.class), anyString(), anyString());
+    }
+
+    @Test
+    void processAlert_nullJsonFromView_throwsException() {
+        when(alertRepository.fetchJsonByAlertId(any(JdbcTemplate.class), anyString(), anyString()))
+                .thenReturn(null);
+
+        assertThatThrownBy(() -> alertService.processAlert(DB_NAME, SCHEMA, ALERT_ID))
+                .isInstanceOf(Exception.class);
+
+        verifyNoInteractions(jsonSchemaValidator);
+    }
+
+    @Test
+    void processAlert_differentDbNames_resolvesSeparately() {
+        JdbcTemplate anotherJdbcTemplate = mock(JdbcTemplate.class);
+        doReturn(mockJdbcTemplate).when(alertService).resolveJdbcTemplate("db1");
+        doReturn(anotherJdbcTemplate).when(alertService).resolveJdbcTemplate("db2");
+
+        when(alertRepository.fetchJsonByAlertId(any(JdbcTemplate.class), anyString(), anyString()))
+                .thenReturn(VALID_JSON);
+        doNothing().when(jsonSchemaValidator).validate(anyString(), any());
+
+        alertService.processAlert("db1", SCHEMA, ALERT_ID);
+        alertService.processAlert("db2", SCHEMA, "ALERT-002");
+
+        verify(alertRepository).fetchJsonByAlertId(eq(mockJdbcTemplate), eq(SCHEMA), eq(ALERT_ID));
+        verify(alertRepository).fetchJsonByAlertId(eq(anotherJdbcTemplate), eq(SCHEMA), eq("ALERT-002"));
+    }
+}
