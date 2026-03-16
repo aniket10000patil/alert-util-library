@@ -31,6 +31,8 @@ class AlertServiceTest {
 
     private static final String PRIMARY_DB   = "primaryDb";
     private static final String SECONDARY_DB = "secondaryDb";
+    private static final String SCHEMA_PRIMARY   = "CREDIT_SCHEMA";
+    private static final String SCHEMA_SECONDARY = "EQUITY_SCHEMA";
 
     @Mock private AlertRepository alertRepository;
     @Mock private JsonSchemaValidator jsonSchemaValidator;
@@ -64,40 +66,40 @@ class AlertServiceTest {
                 }
                 """;
 
-        when(alertRepository.fetchJsonByAlertId(any(JdbcTemplate.class), eq(alertId)))
+        when(alertRepository.fetchJsonByAlertId(any(JdbcTemplate.class), eq(SCHEMA_PRIMARY), eq(alertId)))
                 .thenReturn(jsonFromView);
         doNothing().when(jsonSchemaValidator).validate(eq(alertId), any(JsonNode.class));
 
-        AlertResult result = alertService.processAlert(PRIMARY_DB, alertId);
+        AlertResult result = alertService.processAlert(PRIMARY_DB, SCHEMA_PRIMARY, alertId);
 
         assertThat(result).isNotNull();
         assertThat(result.getAlertId()).isEqualTo(alertId);
         assertThat(result.getJson().get("severity").asText()).isEqualTo("HIGH");
 
-        verify(alertRepository).fetchJsonByAlertId(any(JdbcTemplate.class), eq(alertId));
+        verify(alertRepository).fetchJsonByAlertId(any(JdbcTemplate.class), eq(SCHEMA_PRIMARY), eq(alertId));
         verify(jsonSchemaValidator).validate(eq(alertId), any(JsonNode.class));
     }
 
     // -------------------------------------------------------------------------
-    // Multiple databases
+    // Multiple databases with different schemas
     // -------------------------------------------------------------------------
 
     @Test
-    void processAlert_differentDatabases_eachResolvesCorrectly() {
+    void processAlert_differentDbAndSchema_eachResolvesCorrectly() {
         stubDataSource(PRIMARY_DB, primaryDataSource);
         stubDataSource(SECONDARY_DB, secondaryDataSource);
 
         String json1 = "{\"alertId\":\"A-1\",\"title\":\"Primary Alert\"}";
         String json2 = "{\"alertId\":\"A-2\",\"title\":\"Secondary Alert\"}";
 
-        when(alertRepository.fetchJsonByAlertId(any(JdbcTemplate.class), eq("A-1")))
+        when(alertRepository.fetchJsonByAlertId(any(JdbcTemplate.class), eq(SCHEMA_PRIMARY), eq("A-1")))
                 .thenReturn(json1);
-        when(alertRepository.fetchJsonByAlertId(any(JdbcTemplate.class), eq("A-2")))
+        when(alertRepository.fetchJsonByAlertId(any(JdbcTemplate.class), eq(SCHEMA_SECONDARY), eq("A-2")))
                 .thenReturn(json2);
         doNothing().when(jsonSchemaValidator).validate(any(), any(JsonNode.class));
 
-        AlertResult result1 = alertService.processAlert(PRIMARY_DB, "A-1");
-        AlertResult result2 = alertService.processAlert(SECONDARY_DB, "A-2");
+        AlertResult result1 = alertService.processAlert(PRIMARY_DB, SCHEMA_PRIMARY, "A-1");
+        AlertResult result2 = alertService.processAlert(SECONDARY_DB, SCHEMA_SECONDARY, "A-2");
 
         assertThat(result1.getJson().get("title").asText()).isEqualTo("Primary Alert");
         assertThat(result2.getJson().get("title").asText()).isEqualTo("Secondary Alert");
@@ -112,12 +114,12 @@ class AlertServiceTest {
         stubDataSource(PRIMARY_DB, primaryDataSource);
 
         String json = "{\"alertId\":\"A-1\",\"title\":\"Alert\"}";
-        when(alertRepository.fetchJsonByAlertId(any(JdbcTemplate.class), any()))
+        when(alertRepository.fetchJsonByAlertId(any(JdbcTemplate.class), eq(SCHEMA_PRIMARY), any()))
                 .thenReturn(json);
         doNothing().when(jsonSchemaValidator).validate(any(), any(JsonNode.class));
 
-        alertService.processAlert(PRIMARY_DB, "A-1");
-        alertService.processAlert(PRIMARY_DB, "A-2");
+        alertService.processAlert(PRIMARY_DB, SCHEMA_PRIMARY, "A-1");
+        alertService.processAlert(PRIMARY_DB, SCHEMA_PRIMARY, "A-2");
 
         // DataSource resolved only once — JdbcTemplate is cached
         verify(applicationContext, times(1)).getBean(PRIMARY_DB, DataSource.class);
@@ -132,7 +134,7 @@ class AlertServiceTest {
         when(applicationContext.getBean("unknownDb", DataSource.class))
                 .thenThrow(new org.springframework.beans.factory.NoSuchBeanDefinitionException("unknownDb"));
 
-        assertThatThrownBy(() -> alertService.processAlert("unknownDb", "A-1"))
+        assertThatThrownBy(() -> alertService.processAlert("unknownDb", "SOME_SCHEMA", "A-1"))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("unknownDb");
     }
@@ -141,10 +143,10 @@ class AlertServiceTest {
     void processAlert_alertNotFound_throwsAlertNotFoundException() {
         stubDataSource(PRIMARY_DB, primaryDataSource);
 
-        when(alertRepository.fetchJsonByAlertId(any(JdbcTemplate.class), eq("MISSING")))
+        when(alertRepository.fetchJsonByAlertId(any(JdbcTemplate.class), eq(SCHEMA_PRIMARY), eq("MISSING")))
                 .thenThrow(new AlertNotFoundException("MISSING"));
 
-        assertThatThrownBy(() -> alertService.processAlert(PRIMARY_DB, "MISSING"))
+        assertThatThrownBy(() -> alertService.processAlert(PRIMARY_DB, SCHEMA_PRIMARY, "MISSING"))
                 .isInstanceOf(AlertNotFoundException.class)
                 .hasMessageContaining("MISSING");
 
@@ -155,10 +157,10 @@ class AlertServiceTest {
     void processAlert_malformedJson_throwsAlertProcessingException() {
         stubDataSource(PRIMARY_DB, primaryDataSource);
 
-        when(alertRepository.fetchJsonByAlertId(any(JdbcTemplate.class), eq("A-1")))
+        when(alertRepository.fetchJsonByAlertId(any(JdbcTemplate.class), eq(SCHEMA_PRIMARY), eq("A-1")))
                 .thenReturn("NOT_VALID_JSON{{{{");
 
-        assertThatThrownBy(() -> alertService.processAlert(PRIMARY_DB, "A-1"))
+        assertThatThrownBy(() -> alertService.processAlert(PRIMARY_DB, SCHEMA_PRIMARY, "A-1"))
                 .isInstanceOf(AlertProcessingException.class)
                 .hasMessageContaining("invalid JSON");
 
@@ -170,12 +172,12 @@ class AlertServiceTest {
         stubDataSource(PRIMARY_DB, primaryDataSource);
 
         String json = "{\"alertId\":\"A-1\"}";
-        when(alertRepository.fetchJsonByAlertId(any(JdbcTemplate.class), eq("A-1")))
+        when(alertRepository.fetchJsonByAlertId(any(JdbcTemplate.class), eq(SCHEMA_PRIMARY), eq("A-1")))
                 .thenReturn(json);
         doThrow(new AlertValidationException("A-1", Set.of("$.title: is missing")))
                 .when(jsonSchemaValidator).validate(eq("A-1"), any(JsonNode.class));
 
-        assertThatThrownBy(() -> alertService.processAlert(PRIMARY_DB, "A-1"))
+        assertThatThrownBy(() -> alertService.processAlert(PRIMARY_DB, SCHEMA_PRIMARY, "A-1"))
                 .isInstanceOf(AlertValidationException.class)
                 .hasMessageContaining("$.title: is missing");
     }
