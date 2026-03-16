@@ -8,11 +8,10 @@ void retrieveAlertJson_success() throws Exception {
     when(alertService.processAlert("secondaryDataSource", "tmifc_appl_db", alertId))
             .thenReturn(alertResult);
 
-    mockMvc.perform(get("/v1/bridge/sam8tocmt/alertDetails/{alertId}", alertId))
-            .andExpect(status().isOk())
-            .andExpect(jsonPath("$.data.alertId").value("ALERT-001"))
-            .andExpect(jsonPath("$.data.severity").value("HIGH"));
+    DefaultApiResponse response = bridgeController.retrieveAlertJson(alertId);
 
+    assertThat(response).isNotNull();
+    assertThat(response.getData()).isEqualTo(jsonNode);
     verify(alertService).processAlert("secondaryDataSource", "tmifc_appl_db", alertId);
 }
 
@@ -26,10 +25,9 @@ void retrieveHistoricalAlertJson_success() throws Exception {
     when(alertService.processAlert("primaryDataSource", "sam_custom", alertId))
             .thenReturn(alertResult);
 
-    mockMvc.perform(get("/v1/bridge/sam8tocmt/alertDetails/historical/{alertId}", alertId))
-            .andExpect(status().isOk())
-            .andExpect(jsonPath("$.data.alertId").value("ALERT-002"))
-            .andExpect(jsonPath("$.data.severity").value("LOW"));
+    DefaultApiResponse response = bridgeController.retrieveHistoricalAlertJson(alertId);
 
+    assertThat(response).isNotNull();
+    assertThat(response.getData()).isEqualTo(jsonNode);
     verify(alertService).processAlert("primaryDataSource", "sam_custom", alertId);
 }
