@@ -13,74 +13,85 @@ import org.springframework.core.io.ClassPathResource;
 import java.io.IOException;
 import java.io.InputStream;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
 
 /**
- * Validates alert JSON against a single JSON schema.
+ * Validates alert JSON against a per-alert-type JSON schema.
  *
- * The schema is loaded and compiled once at startup from the consuming app's classpath.
+ * Schema files are loaded lazily from the classpath on first use for each alertTypeId,
+ * then cached for subsequent calls.
+ *
+ * Schema resolution: {schemaBasePath}/{alertTypeId}_schema.json
+ * Example: schemaBasePath=schema, alertTypeId=10000 → classpath:schema/10000_schema.json
  */
 public class JsonSchemaValidator {
 
     private static final Logger log = LoggerFactory.getLogger(JsonSchemaValidator.class);
 
-    private final JsonSchema compiledSchema;
+    private final String schemaBasePath;
+    private final ConcurrentHashMap<String, JsonSchema> schemaCache = new ConcurrentHashMap<>();
 
     /**
-     * @param schemaPath classpath path to the JSON schema file
+     * @param schemaBasePath classpath directory containing per-alert-type schema files
      */
-    public JsonSchemaValidator(String schemaPath) {
-        this.compiledSchema = loadSchema(schemaPath);
+    public JsonSchemaValidator(String schemaBasePath) {
+        this.schemaBasePath = schemaBasePath.endsWith("/")
+                ? schemaBasePath.substring(0, schemaBasePath.length() - 1)
+                : schemaBasePath;
     }
 
     /**
-     * Validates the given JSON against the configured schema.
+     * Validates the given JSON against the schema for the specified alertTypeId.
+     * The schema is loaded and cached on first use for each alertTypeId.
      *
-     * @param alertId used for logging and error messages
-     * @param json    the parsed JSON from the DB view
+     * @param alertId     used for logging and error messages
+     * @param alertTypeId identifies which schema to use (e.g. "10000")
+     * @param json        the parsed JSON from the DB view
      * @throws AlertValidationException if JSON fails schema validation
+     * @throws IllegalStateException    if the schema file cannot be found or loaded
      */
-    public void validate(String alertId, JsonNode json) {
-        log.debug("Validating alertId [{}]", alertId);
+    public void validate(String alertId, String alertTypeId, JsonNode json) {
+        log.debug("Validating alertId [{}] against schema for alertTypeId [{}]", alertId, alertTypeId);
 
-        Set<ValidationMessage> errors = compiledSchema.validate(json);
+        JsonSchema schema = schemaCache.computeIfAbsent(alertTypeId, this::loadSchema);
+
+        Set<ValidationMessage> errors = schema.validate(json);
 
         if (!errors.isEmpty()) {
             Set<String> messages = errors.stream()
                     .map(ValidationMessage::getMessage)
                     .collect(Collectors.toSet());
 
-            log.warn("Validation failed for alertId [{}]: {}", alertId, messages);
+            log.warn("Validation failed for alertId [{}] (alertTypeId [{}]): {}", alertId, alertTypeId, messages);
             throw new AlertValidationException(alertId, messages);
         }
 
-        log.debug("Validation passed for alertId [{}]", alertId);
+        log.debug("Validation passed for alertId [{}] (alertTypeId [{}])", alertId, alertTypeId);
     }
 
-    private JsonSchema loadSchema(String schemaPath) {
-        log.info("alert-util: Loading schema from [{}]", schemaPath);
+    private JsonSchema loadSchema(String alertTypeId) {
+        String schemaPath = schemaBasePath + "/" + alertTypeId + "_schema.json";
+        log.info("alert-util: Loading schema for alertTypeId [{}] from [{}]", alertTypeId, schemaPath);
 
-        try {
-            ClassPathResource resource = new ClassPathResource(schemaPath);
+        ClassPathResource resource = new ClassPathResource(schemaPath);
 
-            if (!resource.exists()) {
-                throw new IllegalStateException(
-                    "[alert-util] Schema file not found on classpath: [" + schemaPath + "]\n"
-                    + "Add the file to your consuming app at: src/main/resources/" + schemaPath
-                );
-            }
+        if (!resource.exists()) {
+            throw new IllegalStateException(
+                "[alert-util] Schema file not found on classpath: [" + schemaPath + "]\n"
+                + "Add the file to your consuming app at: src/main/resources/" + schemaPath
+            );
+        }
 
-            try (InputStream is = resource.getInputStream()) {
-                JsonSchema schema = JsonSchemaFactory
-                        .getInstance(SpecVersion.VersionFlag.V7)
-                        .getSchema(is);
-                log.info("alert-util: Schema loaded and compiled from [{}]", schemaPath);
-                return schema;
-            }
-
+        try (InputStream is = resource.getInputStream()) {
+            JsonSchema schema = JsonSchemaFactory
+                    .getInstance(SpecVersion.VersionFlag.V7)
+                    .getSchema(is);
+            log.info("alert-util: Schema loaded and compiled for alertTypeId [{}] from [{}]", alertTypeId, schemaPath);
+            return schema;
         } catch (IOException e) {
             throw new IllegalStateException(
-                "[alert-util] Failed to load schema from path [" + schemaPath + "]", e);
+                "[alert-util] Failed to load schema for alertTypeId [" + alertTypeId + "] from path [" + schemaPath + "]", e);
         }
     }
 }

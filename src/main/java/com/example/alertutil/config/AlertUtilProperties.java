@@ -8,18 +8,21 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  * Required configuration in the consuming app's application.yml:
  *
  *   alert-util:
- *     view-name: v_alert_json                  # REQUIRED - DB view to query
- *     schema-path: schema/alert-schema.json    # REQUIRED - classpath path to JSON schema
+ *     view-name: v_alert_json              # REQUIRED - DB view to query
+ *     schema-base-path: schema             # REQUIRED - classpath directory containing schema files
+ *
+ * Schema files must be named {alertTypeId}_schema.json and placed under schema-base-path.
+ * Example: src/main/resources/schema/10000_schema.json
  *
  * Optional column name overrides:
  *
  *   alert-util:
- *     alert-id-column: alert_id                # default: alert_id
- *     json-column: alert_json                   # default: alert_json
+ *     alert-id-column: alert_id            # default: alert_id
+ *     json-column: alert_json              # default: alert_json
+ *     alert-type-id-column: alert_type_id  # default: alert_type_id
  *
- * The db-name is NOT configured here — it is passed at runtime to
- * alertService.processAlert(dbName, alertId). This allows a single
- * AlertService bean to work with multiple databases using the same view.
+ * The db-name and schema are passed at runtime to
+ * alertService.processAlert(dbName, schema, alertId).
  */
 @ConfigurationProperties(prefix = "alert-util")
 public class AlertUtilProperties {
@@ -28,17 +31,18 @@ public class AlertUtilProperties {
      * Name of the DB view that returns alert JSON for a given alertId.
      * This view is the same across all databases and environments.
      *
-     * SQL executed: SELECT {jsonColumn} FROM {viewName} WHERE {alertIdColumn} = ?
+     * SQL executed: SELECT {jsonColumn}, {alertTypeIdColumn} FROM {schema}.{viewName} WHERE {alertIdColumn} = ?
      */
     private String viewName;
 
     /**
-     * Classpath path to the JSON schema file used for validation.
-     * The file must be placed in the consuming app's src/main/resources.
+     * Classpath directory containing per-alert-type JSON schema files.
+     * Schema files must be named {alertTypeId}_schema.json.
      *
-     * Example: schema-path: schema/alert-schema.json
+     * Example: schema-base-path: schema
+     * → resolves to classpath:schema/10000_schema.json for alertTypeId "10000"
      */
-    private String schemaPath;
+    private String schemaBasePath;
 
     /**
      * Column in the view used to filter by alertId.
@@ -55,12 +59,13 @@ public class AlertUtilProperties {
     public String getViewName() { return viewName; }
     public void setViewName(String viewName) { this.viewName = viewName; }
 
-    public String getSchemaPath() { return schemaPath; }
-    public void setSchemaPath(String schemaPath) { this.schemaPath = schemaPath; }
+    public String getSchemaBasePath() { return schemaBasePath; }
+    public void setSchemaBasePath(String schemaBasePath) { this.schemaBasePath = schemaBasePath; }
 
     public String getAlertIdColumn() { return alertIdColumn; }
     public void setAlertIdColumn(String alertIdColumn) { this.alertIdColumn = alertIdColumn; }
 
     public String getJsonColumn() { return jsonColumn; }
     public void setJsonColumn(String jsonColumn) { this.jsonColumn = jsonColumn; }
+
 }

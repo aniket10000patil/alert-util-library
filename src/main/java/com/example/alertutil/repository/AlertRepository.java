@@ -18,7 +18,7 @@ import java.sql.Clob;
  * Handles both VARCHAR/TEXT and CLOB column types transparently.
  *
  * SQL executed:
- *   SELECT {jsonColumn} FROM {viewName} WHERE {alertIdColumn} = ?
+ *   SELECT {jsonColumn} FROM {schema}.{viewName} WHERE {alertIdColumn} = ?
  */
 public class AlertRepository {
 
@@ -39,20 +39,22 @@ public class AlertRepository {
      * using the provided JdbcTemplate (which is bound to a specific DataSource).
      *
      * @param jdbcTemplate the JdbcTemplate for the target database
+     * @param schema       the database schema used to qualify the view
      * @param alertId      the alert identifier
      * @return full JSON string from the view
      * @throws AlertNotFoundException   if no row found for alertId
      * @throws AlertProcessingException if CLOB cannot be read
      */
-    public String fetchJsonByAlertId(JdbcTemplate jdbcTemplate, String alertId) {
+    public String fetchByAlertId(JdbcTemplate jdbcTemplate, String schema, String alertId) {
         String sql = String.format(
-                "SELECT %s FROM %s WHERE %s = ?",
+                "SELECT %s FROM %s.%s WHERE %s = ?",
                 jsonColumn,
+                schema,
                 viewName,
                 alertIdColumn
         );
 
-        log.debug("Querying view [{}] for alertId [{}]", viewName, alertId);
+        log.debug("Querying view [{}.{}] for alertId [{}]", schema, viewName, alertId);
 
         String result = jdbcTemplate.query(sql, rs -> {
             if (!rs.next()) {
@@ -79,7 +81,7 @@ public class AlertRepository {
             throw new AlertNotFoundException(alertId);
         }
 
-        log.debug("Fetched JSON for alertId [{}] ({} chars)", alertId, result.length());
+        log.debug("Fetched JSON for alertId [{}] from [{}.{}] ({} chars)", alertId, schema, viewName, result.length());
         return result;
     }
 

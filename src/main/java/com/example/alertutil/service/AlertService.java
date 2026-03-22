@@ -23,14 +23,14 @@ import java.util.concurrent.ConcurrentHashMap;
  *
  * Usage:
  *
- *   alertService.processAlert("primaryDb",   "ALERT-001");
- *   alertService.processAlert("secondaryDb", "ALERT-002");
+ *   alertService.processAlert("primaryDb",   "mySchema", "ALERT-001", "10000");
+ *   alertService.processAlert("secondaryDb", "mySchema", "ALERT-002", "20000");
  *
  * Pipeline:
  *   1. Resolve JdbcTemplate for the given dbName (cached after first lookup)
  *   2. Query the configured view by alertId → returns JSON string
  *   3. Parse the JSON string into a JsonNode
- *   4. Validate against the compiled schema
+ *   4. Validate against the schema for the given alertTypeId (lazy-loaded and cached)
  *   5. Return AlertResult to the caller
  */
 public class AlertService {
@@ -50,6 +50,12 @@ public class AlertService {
 
     public AlertService(AlertRepository alertRepository,
                         JsonSchemaValidator jsonSchemaValidator,
+                        ObjectMapper objectMapper) {
+        this(alertRepository, jsonSchemaValidator, objectMapper, null);
+    }
+
+    public AlertService(AlertRepository alertRepository,
+                        JsonSchemaValidator jsonSchemaValidator,
                         ObjectMapper objectMapper,
                         ApplicationContext applicationContext) {
         this.alertRepository     = alertRepository;
@@ -62,8 +68,10 @@ public class AlertService {
      * Processes an alert: resolves the database by name, queries the configured view,
      * parses and validates the JSON.
      *
-     * @param dbName  name of the DataSource bean in the Spring context (e.g. "primaryDb")
-     * @param alertId the unique alert identifier
+     * @param dbName      name of the DataSource bean in the Spring context (e.g. "primaryDb")
+     * @param schema      database schema name used to qualify the view (e.g. "mySchema")
+     * @param alertId     the unique alert identifier
+     * @param alertTypeId the alert type identifier used to select the JSON schema (e.g. "10000")
      * @return AlertResult containing the validated JsonNode
      *
      * @throws IllegalStateException if no DataSource bean found for dbName
@@ -71,23 +79,23 @@ public class AlertService {
      * @throws com.example.alertutil.exception.AlertValidationException if JSON fails schema validation
      * @throws com.example.alertutil.exception.AlertProcessingException if DB view returns malformed JSON
      */
-    public AlertResult processAlert(String dbName, String alertId) {
-        log.info("Processing alert [{}] — db: [{}]", alertId, dbName);
+    public AlertResult processAlert(String dbName, String schema, String alertId, String alertTypeId) {
+        log.info("Processing alert [{}] — db: [{}], schema: [{}], alertTypeId: [{}]", alertId, dbName, schema, alertTypeId);
 
         // Step 1 — resolve JdbcTemplate (cached)
         JdbcTemplate jdbcTemplate = resolveJdbcTemplate(dbName);
 
         // Step 2 — query the DB view
         log.debug("Step 2 - Fetching JSON for alertId [{}]", alertId);
-        String jsonString = alertRepository.fetchJsonByAlertId(jdbcTemplate, alertId);
+        String jsonString = alertRepository.fetchByAlertId(jdbcTemplate, schema, alertId);
 
         // Step 3 — parse JSON string into JsonNode
         log.debug("Step 3 - Parsing JSON for alertId [{}]", alertId);
         JsonNode json = parseJson(alertId, jsonString);
 
-        // Step 4 — validate against schema
-        log.debug("Step 4 - Validating alertId [{}]", alertId);
-        jsonSchemaValidator.validate(alertId, json);
+        // Step 4 — validate against the schema for the given alertTypeId
+        log.debug("Step 4 - Validating alertId [{}] against alertTypeId [{}]", alertId, alertTypeId);
+        jsonSchemaValidator.validate(alertId, alertTypeId, json);
 
         log.info("Alert [{}] processed successfully", alertId);
         return new AlertResult(alertId, json);
@@ -104,7 +112,7 @@ public class AlertService {
      * in a JdbcTemplate, and caches it.
      * On subsequent calls: returns the cached JdbcTemplate.
      */
-    private JdbcTemplate resolveJdbcTemplate(String dbName) {
+    JdbcTemplate resolveJdbcTemplate(String dbName) {
         return jdbcTemplateCache.computeIfAbsent(dbName, name -> {
             log.info("alert-util: Resolving DataSource bean [{}] (first use)", name);
             try {

@@ -39,15 +39,16 @@ public class AlertUtilAutoConfiguration {
     private static final Logger log = LoggerFactory.getLogger(AlertUtilAutoConfiguration.class);
 
     /**
-     * Loads and compiles the JSON schema at startup.
+     * Creates JsonSchemaValidator with the base path for per-alert-type schemas.
+     * Schemas are loaded lazily on first use for each alertTypeId.
      */
     @Bean
     @ConditionalOnMissingBean
     public JsonSchemaValidator jsonSchemaValidator(AlertUtilProperties properties) {
         validateProperties(properties);
-        log.info("alert-util: Initialising JsonSchemaValidator from [{}]",
-                properties.getSchemaPath());
-        return new JsonSchemaValidator(properties.getSchemaPath());
+        log.info("alert-util: Initialising JsonSchemaValidator with schemaBasePath [{}]",
+                properties.getSchemaBasePath());
+        return new JsonSchemaValidator(properties.getSchemaBasePath());
     }
 
     /**
@@ -89,8 +90,8 @@ public class AlertUtilAutoConfiguration {
         if (isBlank(properties.getViewName()))
             errors.append("\n  - alert-util.view-name is required");
 
-        if (isBlank(properties.getSchemaPath()))
-            errors.append("\n  - alert-util.schema-path is required");
+        if (isBlank(properties.getSchemaBasePath()))
+            errors.append("\n  - alert-util.schema-base-path is required");
 
         if (!errors.isEmpty()) {
             throw new IllegalStateException(
@@ -98,7 +99,7 @@ public class AlertUtilAutoConfiguration {
                 + "\n\nAdd the following to your application.yml:\n\n"
                 + "  alert-util:\n"
                 + "    view-name: v_alert_json\n"
-                + "    schema-path: schema/alert-schema.json\n"
+                + "    schema-base-path: schema\n"
             );
         }
     }
