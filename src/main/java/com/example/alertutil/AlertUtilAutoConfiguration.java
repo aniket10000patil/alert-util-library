@@ -35,9 +35,9 @@ import java.util.Map;
  *         view-name: v_alert_20000
  *         schema-path: schema/20000_schema.json
  *
- * The dbName and alertTypeId are passed at runtime:
+ * The dbName, alertInternalId and alertTypeId are passed at runtime:
  *
- *   alertService.processAlert("primaryDb", "ALERT-001", "10000");
+ *   alertService.processAlert("primaryDb", 123456L, "10000");
  */
 @AutoConfiguration
 @EnableConfigurationProperties(AlertUtilProperties.class)
@@ -56,9 +56,9 @@ public class AlertUtilAutoConfiguration {
     @ConditionalOnMissingBean
     public AlertRepository alertRepository(AlertUtilProperties properties) {
         log.info("alert-util: AlertRepository configured — idColumn: [{}], jsonColumn: [{}]",
-                properties.getAlertIdColumn(), properties.getJsonColumn());
+                properties.getAlertInternalIdColumn(), properties.getJsonColumn());
         return new AlertRepository(
-                properties.getAlertIdColumn(),
+                properties.getAlertInternalIdColumn(),
                 properties.getJsonColumn()
         );
     }

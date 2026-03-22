@@ -39,14 +39,14 @@ class AlertServiceTest {
     @Mock
     private JdbcTemplate mockJdbcTemplate;
 
-    private static final String DB_NAME      = "testDb";
-    private static final String ALERT_ID     = "ALERT-001";
-    private static final String ALERT_TYPE   = "10000";
-    private static final String VIEW_NAME    = "v_alert_10000";
-    private static final String SCHEMA_PATH  = "schema/10000_schema.json";
-    private static final String VALID_JSON   = """
+    private static final String DB_NAME             = "testDb";
+    private static final Long   ALERT_INTERNAL_ID   = 123456L;
+    private static final String ALERT_TYPE          = "10000";
+    private static final String VIEW_NAME           = "v_alert_10000";
+    private static final String SCHEMA_PATH         = "schema/10000_schema.json";
+    private static final String VALID_JSON          = """
             {
-              "alertId": "ALERT-001",
+              "alertInternalId": 123456,
               "title": "Disk usage critical",
               "severity": "HIGH"
             }
@@ -64,24 +64,24 @@ class AlertServiceTest {
 
     @Test
     void processAlert_success_returnsAlertResult() {
-        when(alertRepository.fetchByAlertId(any(JdbcTemplate.class), anyString(), anyString()))
+        when(alertRepository.fetchByAlertInternalId(any(JdbcTemplate.class), anyString(), anyLong()))
                 .thenReturn(VALID_JSON);
-        doNothing().when(jsonSchemaValidator).validate(anyString(), anyString(), any());
+        doNothing().when(jsonSchemaValidator).validate(anyLong(), anyString(), any());
 
-        AlertResult result = alertService.processAlert(DB_NAME, ALERT_ID, ALERT_TYPE);
+        AlertResult result = alertService.processAlert(DB_NAME, ALERT_INTERNAL_ID, ALERT_TYPE);
 
         assertThat(result).isNotNull();
-        assertThat(result.getAlertId()).isEqualTo(ALERT_ID);
+        assertThat(result.getAlertInternalId()).isEqualTo(ALERT_INTERNAL_ID);
         assertThat(result.getJson().get("severity").asText()).isEqualTo("HIGH");
 
-        verify(alertRepository).fetchByAlertId(mockJdbcTemplate, VIEW_NAME, ALERT_ID);
-        verify(jsonSchemaValidator).validate(eq(ALERT_ID), eq(SCHEMA_PATH), any());
+        verify(alertRepository).fetchByAlertInternalId(mockJdbcTemplate, VIEW_NAME, ALERT_INTERNAL_ID);
+        verify(jsonSchemaValidator).validate(eq(ALERT_INTERNAL_ID), eq(SCHEMA_PATH), any());
         verify(alertService).resolveJdbcTemplate(DB_NAME);
     }
 
     @Test
     void processAlert_unknownAlertType_throwsIllegalArgumentException() {
-        assertThatThrownBy(() -> alertService.processAlert(DB_NAME, ALERT_ID, "99999"))
+        assertThatThrownBy(() -> alertService.processAlert(DB_NAME, ALERT_INTERNAL_ID, "99999"))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("99999");
 
@@ -91,22 +91,22 @@ class AlertServiceTest {
 
     @Test
     void processAlert_alertNotFound_throwsAlertNotFoundException() {
-        when(alertRepository.fetchByAlertId(any(JdbcTemplate.class), anyString(), anyString()))
-                .thenThrow(new AlertNotFoundException(ALERT_ID));
+        when(alertRepository.fetchByAlertInternalId(any(JdbcTemplate.class), anyString(), anyLong()))
+                .thenThrow(new AlertNotFoundException(ALERT_INTERNAL_ID));
 
-        assertThatThrownBy(() -> alertService.processAlert(DB_NAME, ALERT_ID, ALERT_TYPE))
+        assertThatThrownBy(() -> alertService.processAlert(DB_NAME, ALERT_INTERNAL_ID, ALERT_TYPE))
                 .isInstanceOf(AlertNotFoundException.class)
-                .hasMessageContaining(ALERT_ID);
+                .hasMessageContaining(ALERT_INTERNAL_ID.toString());
 
         verifyNoInteractions(jsonSchemaValidator);
     }
 
     @Test
     void processAlert_malformedJson_throwsAlertProcessingException() {
-        when(alertRepository.fetchByAlertId(any(JdbcTemplate.class), anyString(), anyString()))
+        when(alertRepository.fetchByAlertInternalId(any(JdbcTemplate.class), anyString(), anyLong()))
                 .thenReturn("NOT_VALID_JSON{{");
 
-        assertThatThrownBy(() -> alertService.processAlert(DB_NAME, ALERT_ID, ALERT_TYPE))
+        assertThatThrownBy(() -> alertService.processAlert(DB_NAME, ALERT_INTERNAL_ID, ALERT_TYPE))
                 .isInstanceOf(AlertProcessingException.class)
                 .hasMessageContaining("invalid JSON");
 
@@ -115,41 +115,41 @@ class AlertServiceTest {
 
     @Test
     void processAlert_validationFails_throwsAlertValidationException() {
-        when(alertRepository.fetchByAlertId(any(JdbcTemplate.class), anyString(), anyString()))
-                .thenReturn("{\"alertId\": \"ALERT-001\"}");
-        doThrow(new AlertValidationException(ALERT_ID, Set.of("title is required")))
-                .when(jsonSchemaValidator).validate(eq(ALERT_ID), eq(SCHEMA_PATH), any());
+        when(alertRepository.fetchByAlertInternalId(any(JdbcTemplate.class), anyString(), anyLong()))
+                .thenReturn("{\"alertInternalId\": 123456}");
+        doThrow(new AlertValidationException(ALERT_INTERNAL_ID, Set.of("title is required")))
+                .when(jsonSchemaValidator).validate(eq(ALERT_INTERNAL_ID), eq(SCHEMA_PATH), any());
 
-        assertThatThrownBy(() -> alertService.processAlert(DB_NAME, ALERT_ID, ALERT_TYPE))
+        assertThatThrownBy(() -> alertService.processAlert(DB_NAME, ALERT_INTERNAL_ID, ALERT_TYPE))
                 .isInstanceOf(AlertValidationException.class)
                 .hasMessageContaining("title is required");
     }
 
     @Test
     void processAlert_sameDbCalledTwice_cachesJdbcTemplate() {
-        when(alertRepository.fetchByAlertId(any(JdbcTemplate.class), anyString(), anyString()))
+        when(alertRepository.fetchByAlertInternalId(any(JdbcTemplate.class), anyString(), anyLong()))
                 .thenReturn(VALID_JSON);
-        doNothing().when(jsonSchemaValidator).validate(anyString(), anyString(), any());
+        doNothing().when(jsonSchemaValidator).validate(anyLong(), anyString(), any());
 
-        alertService.processAlert(DB_NAME, ALERT_ID, ALERT_TYPE);
-        alertService.processAlert(DB_NAME, "ALERT-002", ALERT_TYPE);
+        alertService.processAlert(DB_NAME, ALERT_INTERNAL_ID, ALERT_TYPE);
+        alertService.processAlert(DB_NAME, 789012L, ALERT_TYPE);
 
         verify(alertService, times(2)).resolveJdbcTemplate(DB_NAME);
     }
 
     @Test
     void processAlert_differentAlertTypes_useCorrectViewAndSchema() {
-        when(alertRepository.fetchByAlertId(any(JdbcTemplate.class), anyString(), anyString()))
+        when(alertRepository.fetchByAlertInternalId(any(JdbcTemplate.class), anyString(), anyLong()))
                 .thenReturn(VALID_JSON);
-        doNothing().when(jsonSchemaValidator).validate(anyString(), anyString(), any());
+        doNothing().when(jsonSchemaValidator).validate(anyLong(), anyString(), any());
 
-        alertService.processAlert(DB_NAME, ALERT_ID, "10000");
-        alertService.processAlert(DB_NAME, "ALERT-002", "20000");
+        alertService.processAlert(DB_NAME, ALERT_INTERNAL_ID, "10000");
+        alertService.processAlert(DB_NAME, 789012L, "20000");
 
-        verify(alertRepository).fetchByAlertId(mockJdbcTemplate, "v_alert_10000", ALERT_ID);
-        verify(alertRepository).fetchByAlertId(mockJdbcTemplate, "v_alert_20000", "ALERT-002");
-        verify(jsonSchemaValidator).validate(eq(ALERT_ID), eq("schema/10000_schema.json"), any());
-        verify(jsonSchemaValidator).validate(eq("ALERT-002"), eq("schema/20000_schema.json"), any());
+        verify(alertRepository).fetchByAlertInternalId(mockJdbcTemplate, "v_alert_10000", ALERT_INTERNAL_ID);
+        verify(alertRepository).fetchByAlertInternalId(mockJdbcTemplate, "v_alert_20000", 789012L);
+        verify(jsonSchemaValidator).validate(eq(ALERT_INTERNAL_ID), eq("schema/10000_schema.json"), any());
+        verify(jsonSchemaValidator).validate(eq(789012L), eq("schema/20000_schema.json"), any());
     }
 
     @Test
@@ -158,15 +158,15 @@ class AlertServiceTest {
         doReturn(mockJdbcTemplate).when(alertService).resolveJdbcTemplate("db1");
         doReturn(anotherJdbcTemplate).when(alertService).resolveJdbcTemplate("db2");
 
-        when(alertRepository.fetchByAlertId(any(JdbcTemplate.class), anyString(), anyString()))
+        when(alertRepository.fetchByAlertInternalId(any(JdbcTemplate.class), anyString(), anyLong()))
                 .thenReturn(VALID_JSON);
-        doNothing().when(jsonSchemaValidator).validate(anyString(), anyString(), any());
+        doNothing().when(jsonSchemaValidator).validate(anyLong(), anyString(), any());
 
-        alertService.processAlert("db1", ALERT_ID, ALERT_TYPE);
-        alertService.processAlert("db2", "ALERT-002", ALERT_TYPE);
+        alertService.processAlert("db1", ALERT_INTERNAL_ID, ALERT_TYPE);
+        alertService.processAlert("db2", 789012L, ALERT_TYPE);
 
-        verify(alertRepository).fetchByAlertId(eq(mockJdbcTemplate), eq(VIEW_NAME), eq(ALERT_ID));
-        verify(alertRepository).fetchByAlertId(eq(anotherJdbcTemplate), eq(VIEW_NAME), eq("ALERT-002"));
+        verify(alertRepository).fetchByAlertInternalId(eq(mockJdbcTemplate), eq(VIEW_NAME), eq(ALERT_INTERNAL_ID));
+        verify(alertRepository).fetchByAlertInternalId(eq(anotherJdbcTemplate), eq(VIEW_NAME), eq(789012L));
     }
 
     // -------------------------------------------------------------------------

@@ -4,8 +4,8 @@ A Spring Boot auto-configuration library that fetches alert JSON from a database
 validates it against a JSON schema, and returns a structured result.
 
 Each alert type has its own **DB view** and **JSON schema**, both configured once.
-At runtime the calling application supplies the `alertId` and `alertTypeId` — the library
-picks the right view and schema automatically.
+At runtime the calling application supplies the `alertInternalId` (Long) and `alertTypeId` —
+the library picks the right view and schema automatically.
 
 Supports **multiple databases** — pass the db name at runtime, all views are configured once.
 
@@ -24,7 +24,7 @@ Supports **multiple databases** — pass the db name at runtime, all views are c
 ### 2. Configure alert types in `application.yml`
 
 Define each alert type with its own DB view and JSON schema path.
-The calling application is responsible for resolving the `alertTypeId` from the `alertId`.
+The calling application is responsible for resolving the `alertTypeId` from the alert.
 
 ```yaml
 alert-util:
@@ -89,7 +89,8 @@ public class DataSourceConfig {
 
 ### 5. Use in your code
 
-Your application resolves the `alertTypeId` from the `alertId` and passes both to the library.
+Your application resolves the `alertTypeId` and passes it along with the `alertInternalId`.
+The `alertInternalId` is a `Long` for optimal DB index performance.
 
 ```java
 @RestController
@@ -98,13 +99,12 @@ public class AlertController {
     @Autowired
     private AlertService alertService;
 
-    @GetMapping("/api/v1/alerts/{alertId}")
+    @GetMapping("/api/v1/alerts/{alertInternalId}")
     public AlertResult getAlert(
-            @PathVariable String alertId,
+            @PathVariable Long alertInternalId,
             @RequestParam String alertTypeId) {
 
-        // alertTypeId resolved by the calling application (e.g. "10000", "20000")
-        return alertService.processAlert("primaryDb", alertId, alertTypeId);
+        return alertService.processAlert("primaryDb", alertInternalId, alertTypeId);
     }
 }
 ```
@@ -115,11 +115,11 @@ public class AlertController {
    `JsonSchemaValidator` beans. All alert-type configs are validated (view name and schema path
    must be present for every registered type). No DB connections or schema files are loaded yet.
 
-2. **Runtime** — When you call `alertService.processAlert(dbName, alertId, alertTypeId)`:
+2. **Runtime** — When you call `alertService.processAlert(dbName, alertInternalId, alertTypeId)`:
    - Looks up the `alertTypeId` in the configured `alert-types` map → resolves `viewName` + `schemaPath`
    - Resolves the `DataSource` bean by `dbName` from the Spring context
      (cached after first lookup per dbName)
-   - Queries `SELECT {json-column} FROM {viewName} WHERE {alert-id-column} = ?`
+   - Queries `SELECT {json-column} FROM {viewName} WHERE {alert-internal-id-column} = ?`
    - Handles both `VARCHAR` and `CLOB` columns transparently
    - Parses the JSON string into a `JsonNode`
    - Loads and compiles the schema from `schemaPath` (cached after first load per alert type)
@@ -133,7 +133,7 @@ public class AlertController {
 | `alert-util.alert-types` | **Yes** | — | Map of alertTypeId → `{view-name, schema-path}` |
 | `alert-util.alert-types.<id>.view-name` | **Yes** | — | DB view for this alert type |
 | `alert-util.alert-types.<id>.schema-path` | **Yes** | — | Classpath path to the JSON schema file |
-| `alert-util.alert-id-column` | No | `alert_id` | Column used to filter by alertId (shared across all alert types) |
+| `alert-util.alert-internal-id-column` | No | `alert_internal_id` | Column used to filter by alertInternalId (shared across all alert types) |
 | `alert-util.json-column` | No | `alert_json` | Column holding the JSON, VARCHAR or CLOB (shared across all alert types) |
 
 ## Exceptions
@@ -142,7 +142,7 @@ public class AlertController {
 |---|---|
 | `IllegalArgumentException` | alertTypeId not found in the configured alert-types map |
 | `IllegalStateException` | No DataSource bean found for dbName, or schema file missing from classpath |
-| `AlertNotFoundException` | No row found in the DB view for the given alertId |
+| `AlertNotFoundException` | No row found in the DB view for the given alertInternalId |
 | `AlertProcessingException` | DB view returns malformed JSON or CLOB read failure |
 | `AlertValidationException` | JSON fails schema validation (contains all error messages) |
 

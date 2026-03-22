@@ -10,7 +10,7 @@ import java.io.Reader;
 import java.sql.Clob;
 
 /**
- * Queries a DB view to fetch alert JSON by alertId.
+ * Queries a DB view to fetch alert JSON by alertInternalId.
  *
  * The view name is resolved per call from the alert-type config — different alert types
  * query different views. Column names are shared across all alert types and configured once.
@@ -18,39 +18,39 @@ import java.sql.Clob;
  * Handles both VARCHAR/TEXT and CLOB column types transparently.
  *
  * SQL executed:
- *   SELECT {jsonColumn} FROM {viewName} WHERE {alertIdColumn} = ?
+ *   SELECT {jsonColumn} FROM {viewName} WHERE {alertInternalIdColumn} = ?
  */
 public class AlertRepository {
 
     private static final Logger log = LoggerFactory.getLogger(AlertRepository.class);
 
-    private final String alertIdColumn;
+    private final String alertInternalIdColumn;
     private final String jsonColumn;
 
-    public AlertRepository(String alertIdColumn, String jsonColumn) {
-        this.alertIdColumn = alertIdColumn;
-        this.jsonColumn    = jsonColumn;
+    public AlertRepository(String alertInternalIdColumn, String jsonColumn) {
+        this.alertInternalIdColumn = alertInternalIdColumn;
+        this.jsonColumn            = jsonColumn;
     }
 
     /**
-     * Fetches the JSON string from the given view for the specified alertId.
+     * Fetches the JSON string from the given view for the specified alertInternalId.
      *
-     * @param jdbcTemplate the JdbcTemplate for the target database
-     * @param viewName     the DB view to query (resolved from alert-type config)
-     * @param alertId      the alert identifier
+     * @param jdbcTemplate    the JdbcTemplate for the target database
+     * @param viewName        the DB view to query (resolved from alert-type config)
+     * @param alertInternalId the alert internal identifier (Long for DB performance)
      * @return full JSON string from the view
-     * @throws AlertNotFoundException   if no row found for alertId
+     * @throws AlertNotFoundException   if no row found for alertInternalId
      * @throws AlertProcessingException if CLOB cannot be read
      */
-    public String fetchByAlertId(JdbcTemplate jdbcTemplate, String viewName, String alertId) {
+    public String fetchByAlertInternalId(JdbcTemplate jdbcTemplate, String viewName, Long alertInternalId) {
         String sql = String.format(
                 "SELECT %s FROM %s WHERE %s = ?",
                 jsonColumn,
                 viewName,
-                alertIdColumn
+                alertInternalIdColumn
         );
 
-        log.debug("Querying view [{}] for alertId [{}]", viewName, alertId);
+        log.debug("Querying view [{}] for alertInternalId [{}]", viewName, alertInternalId);
 
         String result = jdbcTemplate.query(sql, rs -> {
             if (!rs.next()) {
@@ -65,19 +65,19 @@ public class AlertRepository {
 
             // CLOB — stream the full content to avoid truncation
             if (value instanceof Clob clob) {
-                return readClob(alertId, clob);
+                return readClob(alertInternalId, clob);
             }
 
             // VARCHAR, TEXT, NVARCHAR — driver already gave us a String
             return value.toString();
 
-        }, alertId);
+        }, alertInternalId);
 
         if (result == null) {
-            throw new AlertNotFoundException(alertId);
+            throw new AlertNotFoundException(alertInternalId);
         }
 
-        log.debug("Fetched JSON for alertId [{}] from view [{}] ({} chars)", alertId, viewName, result.length());
+        log.debug("Fetched JSON for alertInternalId [{}] from view [{}] ({} chars)", alertInternalId, viewName, result.length());
         return result;
     }
 
@@ -85,7 +85,7 @@ public class AlertRepository {
      * Streams full CLOB content into a String via its Reader.
      * Uses a 4KB buffer for efficient reading.
      */
-    private String readClob(String alertId, Clob clob) {
+    private String readClob(Long alertInternalId, Clob clob) {
         try (Reader reader = clob.getCharacterStream()) {
             StringBuilder sb = new StringBuilder();
             char[] buffer = new char[4096];
@@ -93,11 +93,11 @@ public class AlertRepository {
             while ((charsRead = reader.read(buffer)) != -1) {
                 sb.append(buffer, 0, charsRead);
             }
-            log.debug("Read CLOB for alertId [{}] ({} chars)", alertId, sb.length());
+            log.debug("Read CLOB for alertInternalId [{}] ({} chars)", alertInternalId, sb.length());
             return sb.toString();
         } catch (Exception e) {
             throw new AlertProcessingException(
-                    alertId, "Failed to read CLOB content: " + e.getMessage(), e);
+                    alertInternalId, "Failed to read CLOB content: " + e.getMessage(), e);
         }
     }
 }

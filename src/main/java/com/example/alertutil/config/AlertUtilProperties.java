@@ -23,11 +23,11 @@ import java.util.Map;
  * Optional column name overrides (applied across all alert types):
  *
  *   alert-util:
- *     alert-id-column: alert_id   # default: alert_id
- *     json-column: alert_json     # default: alert_json
+ *     alert-internal-id-column: alert_internal_id   # default: alert_internal_id
+ *     json-column: alert_json                       # default: alert_json
  *
- * The db-name and alert-type-id are passed at runtime to
- * alertService.processAlert(dbName, alertId, alertTypeId).
+ * The db-name, alertInternalId and alert-type-id are passed at runtime to
+ * alertService.processAlert(dbName, alertInternalId, alertTypeId).
  */
 @ConfigurationProperties(prefix = "alert-util")
 public class AlertUtilProperties {
@@ -39,9 +39,9 @@ public class AlertUtilProperties {
     private Map<String, AlertTypeProperties> alertTypes = new HashMap<>();
 
     /**
-     * Column in the view used to filter by alertId.
+     * Column in the view used to filter by alertInternalId.
      */
-    private String alertIdColumn = "alert_id";
+    private String alertInternalIdColumn = "alert_internal_id";
 
     /**
      * Column in the view that holds the JSON string (can be VARCHAR or CLOB).
@@ -53,8 +53,8 @@ public class AlertUtilProperties {
     public Map<String, AlertTypeProperties> getAlertTypes() { return alertTypes; }
     public void setAlertTypes(Map<String, AlertTypeProperties> alertTypes) { this.alertTypes = alertTypes; }
 
-    public String getAlertIdColumn() { return alertIdColumn; }
-    public void setAlertIdColumn(String alertIdColumn) { this.alertIdColumn = alertIdColumn; }
+    public String getAlertInternalIdColumn() { return alertInternalIdColumn; }
+    public void setAlertInternalIdColumn(String alertInternalIdColumn) { this.alertInternalIdColumn = alertInternalIdColumn; }
 
     public String getJsonColumn() { return jsonColumn; }
     public void setJsonColumn(String jsonColumn) { this.jsonColumn = jsonColumn; }

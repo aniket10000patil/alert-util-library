@@ -6,12 +6,12 @@ package com.example.alertutil.exception;
  */
 public class AlertProcessingException extends RuntimeException {
 
-    private final String alertId;
+    private final Long alertInternalId;
 
-    public AlertProcessingException(String alertId, String reason, Throwable cause) {
-        super("Failed to process alert [" + alertId + "]: " + reason, cause);
-        this.alertId = alertId;
+    public AlertProcessingException(Long alertInternalId, String reason, Throwable cause) {
+        super("Failed to process alert [" + alertInternalId + "]: " + reason, cause);
+        this.alertInternalId = alertInternalId;
     }
 
-    public String getAlertId() { return alertId; }
+    public Long getAlertInternalId() { return alertInternalId; }
 }

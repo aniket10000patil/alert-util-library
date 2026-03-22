@@ -32,14 +32,14 @@ public class JsonSchemaValidator {
      * Validates the given JSON against the schema at the specified classpath path.
      * The schema is loaded and cached on first use for each schemaPath.
      *
-     * @param alertId    used for logging and error messages
-     * @param schemaPath classpath path to the JSON schema file (e.g. schema/10000_schema.json)
-     * @param json       the parsed JSON from the DB view
+     * @param alertInternalId used for logging and error messages
+     * @param schemaPath      classpath path to the JSON schema file (e.g. schema/10000_schema.json)
+     * @param json            the parsed JSON from the DB view
      * @throws AlertValidationException if JSON fails schema validation
      * @throws IllegalStateException    if the schema file cannot be found or loaded
      */
-    public void validate(String alertId, String schemaPath, JsonNode json) {
-        log.debug("Validating alertId [{}] against schema [{}]", alertId, schemaPath);
+    public void validate(Long alertInternalId, String schemaPath, JsonNode json) {
+        log.debug("Validating alertInternalId [{}] against schema [{}]", alertInternalId, schemaPath);
 
         JsonSchema schema = schemaCache.computeIfAbsent(schemaPath, this::loadSchema);
 
@@ -50,11 +50,11 @@ public class JsonSchemaValidator {
                     .map(ValidationMessage::getMessage)
                     .collect(Collectors.toSet());
 
-            log.warn("Validation failed for alertId [{}] (schema [{}]): {}", alertId, schemaPath, messages);
-            throw new AlertValidationException(alertId, messages);
+            log.warn("Validation failed for alertInternalId [{}] (schema [{}]): {}", alertInternalId, schemaPath, messages);
+            throw new AlertValidationException(alertInternalId, messages);
         }
 
-        log.debug("Validation passed for alertId [{}] (schema [{}])", alertId, schemaPath);
+        log.debug("Validation passed for alertInternalId [{}] (schema [{}])", alertInternalId, schemaPath);
     }
 
     private JsonSchema loadSchema(String schemaPath) {

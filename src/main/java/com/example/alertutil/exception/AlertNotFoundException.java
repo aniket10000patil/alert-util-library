@@ -1,16 +1,16 @@
 package com.example.alertutil.exception;
 
 /**
- * Thrown when no alert is found in the DB view for the given alertId.
+ * Thrown when no alert is found in the DB view for the given alertInternalId.
  */
 public class AlertNotFoundException extends RuntimeException {
 
-    private final String alertId;
+    private final Long alertInternalId;
 
-    public AlertNotFoundException(String alertId) {
-        super("No alert found for alertId: [" + alertId + "]");
-        this.alertId = alertId;
+    public AlertNotFoundException(Long alertInternalId) {
+        super("No alert found for alertInternalId: [" + alertInternalId + "]");
+        this.alertInternalId = alertInternalId;
     }
 
-    public String getAlertId() { return alertId; }
+    public Long getAlertInternalId() { return alertInternalId; }
 }

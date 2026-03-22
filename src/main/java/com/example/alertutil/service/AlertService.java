@@ -20,18 +20,18 @@ import java.util.concurrent.ConcurrentHashMap;
  * Main entry point for the consuming application.
  *
  * A single AlertService bean that supports multiple databases and multiple alert types.
- * The caller supplies the dbName, alertId and alertTypeId at runtime. The library
+ * The caller supplies the dbName, alertInternalId and alertTypeId at runtime. The library
  * resolves the correct DB view and JSON schema from config for each alertTypeId.
  *
  * Usage:
  *
- *   alertService.processAlert("primaryDb", "ALERT-001", "10000");
- *   alertService.processAlert("secondaryDb", "ALERT-002", "20000");
+ *   alertService.processAlert("primaryDb", 123456L, "10000");
+ *   alertService.processAlert("secondaryDb", 789012L, "20000");
  *
  * Pipeline:
  *   1. Look up alertTypeId in the configured alert-types map → resolves viewName + schemaPath
  *   2. Resolve JdbcTemplate for dbName (cached after first lookup)
- *   3. Query the resolved view by alertId → returns JSON string
+ *   3. Query the resolved view by alertInternalId → returns JSON string
  *   4. Parse the JSON string into a JsonNode
  *   5. Validate against the resolved schema (lazy-loaded and cached)
  *   6. Return AlertResult to the caller
@@ -75,9 +75,9 @@ public class AlertService {
      * Processes an alert: looks up alert-type config, queries the correct DB view,
      * parses and validates the JSON against the correct schema.
      *
-     * @param dbName      name of the DataSource bean in the Spring context (e.g. "primaryDb")
-     * @param alertId     the unique alert identifier
-     * @param alertTypeId the alert type identifier used to resolve view and schema (e.g. "10000")
+     * @param dbName          name of the DataSource bean in the Spring context (e.g. "primaryDb")
+     * @param alertInternalId the unique alert internal identifier (Long for DB performance)
+     * @param alertTypeId     the alert type identifier used to resolve view and schema (e.g. "10000")
      * @return AlertResult containing the validated JsonNode
      *
      * @throws IllegalArgumentException if alertTypeId is not found in config
@@ -86,8 +86,8 @@ public class AlertService {
      * @throws com.example.alertutil.exception.AlertValidationException if JSON fails schema validation
      * @throws com.example.alertutil.exception.AlertProcessingException if DB view returns malformed JSON
      */
-    public AlertResult processAlert(String dbName, String alertId, String alertTypeId) {
-        log.info("Processing alert [{}] — db: [{}], alertTypeId: [{}]", alertId, dbName, alertTypeId);
+    public AlertResult processAlert(String dbName, Long alertInternalId, String alertTypeId) {
+        log.info("Processing alert [{}] — db: [{}], alertTypeId: [{}]", alertInternalId, dbName, alertTypeId);
 
         // Step 1 — resolve view name and schema path for this alert type
         AlertTypeProperties typeConfig = resolveAlertTypeConfig(alertTypeId);
@@ -98,19 +98,19 @@ public class AlertService {
         JdbcTemplate jdbcTemplate = resolveJdbcTemplate(dbName);
 
         // Step 3 — query the DB view for this alert type
-        log.debug("Step 3 - Fetching JSON for alertId [{}] from view [{}]", alertId, typeConfig.getViewName());
-        String jsonString = alertRepository.fetchByAlertId(jdbcTemplate, typeConfig.getViewName(), alertId);
+        log.debug("Step 3 - Fetching JSON for alertInternalId [{}] from view [{}]", alertInternalId, typeConfig.getViewName());
+        String jsonString = alertRepository.fetchByAlertInternalId(jdbcTemplate, typeConfig.getViewName(), alertInternalId);
 
         // Step 4 — parse JSON string into JsonNode
-        log.debug("Step 4 - Parsing JSON for alertId [{}]", alertId);
-        JsonNode json = parseJson(alertId, jsonString);
+        log.debug("Step 4 - Parsing JSON for alertInternalId [{}]", alertInternalId);
+        JsonNode json = parseJson(alertInternalId, jsonString);
 
         // Step 5 — validate against the schema for this alert type
-        log.debug("Step 5 - Validating alertId [{}] against schema [{}]", alertId, typeConfig.getSchemaPath());
-        jsonSchemaValidator.validate(alertId, typeConfig.getSchemaPath(), json);
+        log.debug("Step 5 - Validating alertInternalId [{}] against schema [{}]", alertInternalId, typeConfig.getSchemaPath());
+        jsonSchemaValidator.validate(alertInternalId, typeConfig.getSchemaPath(), json);
 
-        log.info("Alert [{}] processed successfully (alertTypeId [{}])", alertId, alertTypeId);
-        return new AlertResult(alertId, json);
+        log.info("Alert [{}] processed successfully (alertTypeId [{}])", alertInternalId, alertTypeId);
+        return new AlertResult(alertInternalId, json);
     }
 
     // -------------------------------------------------------------------------
@@ -160,12 +160,12 @@ public class AlertService {
         });
     }
 
-    private JsonNode parseJson(String alertId, String jsonString) {
+    private JsonNode parseJson(Long alertInternalId, String jsonString) {
         try {
             return objectMapper.readTree(jsonString);
         } catch (Exception e) {
             throw new AlertProcessingException(
-                    alertId, "DB view returned invalid JSON: " + e.getMessage(), e);
+                    alertInternalId, "DB view returned invalid JSON: " + e.getMessage(), e);
         }
     }
 }
