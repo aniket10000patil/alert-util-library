@@ -10,51 +10,47 @@ import java.io.Reader;
 import java.sql.Clob;
 
 /**
- * Queries the configured DB view to fetch alert JSON by alertId.
+ * Queries a DB view to fetch alert JSON by alertId.
  *
- * The view name and column names are fixed from config. The JdbcTemplate
- * (i.e. which database to hit) is passed per call by AlertService.
+ * The view name is resolved per call from the alert-type config — different alert types
+ * query different views. Column names are shared across all alert types and configured once.
  *
  * Handles both VARCHAR/TEXT and CLOB column types transparently.
  *
  * SQL executed:
- *   SELECT {jsonColumn} FROM {schema}.{viewName} WHERE {alertIdColumn} = ?
+ *   SELECT {jsonColumn} FROM {viewName} WHERE {alertIdColumn} = ?
  */
 public class AlertRepository {
 
     private static final Logger log = LoggerFactory.getLogger(AlertRepository.class);
 
-    private final String viewName;
     private final String alertIdColumn;
     private final String jsonColumn;
 
-    public AlertRepository(String viewName, String alertIdColumn, String jsonColumn) {
-        this.viewName      = viewName;
+    public AlertRepository(String alertIdColumn, String jsonColumn) {
         this.alertIdColumn = alertIdColumn;
         this.jsonColumn    = jsonColumn;
     }
 
     /**
-     * Fetches the JSON string from the configured view for the given alertId,
-     * using the provided JdbcTemplate (which is bound to a specific DataSource).
+     * Fetches the JSON string from the given view for the specified alertId.
      *
      * @param jdbcTemplate the JdbcTemplate for the target database
-     * @param schema       the database schema used to qualify the view
+     * @param viewName     the DB view to query (resolved from alert-type config)
      * @param alertId      the alert identifier
      * @return full JSON string from the view
      * @throws AlertNotFoundException   if no row found for alertId
      * @throws AlertProcessingException if CLOB cannot be read
      */
-    public String fetchByAlertId(JdbcTemplate jdbcTemplate, String schema, String alertId) {
+    public String fetchByAlertId(JdbcTemplate jdbcTemplate, String viewName, String alertId) {
         String sql = String.format(
-                "SELECT %s FROM %s.%s WHERE %s = ?",
+                "SELECT %s FROM %s WHERE %s = ?",
                 jsonColumn,
-                schema,
                 viewName,
                 alertIdColumn
         );
 
-        log.debug("Querying view [{}.{}] for alertId [{}]", schema, viewName, alertId);
+        log.debug("Querying view [{}] for alertId [{}]", viewName, alertId);
 
         String result = jdbcTemplate.query(sql, rs -> {
             if (!rs.next()) {
@@ -81,7 +77,7 @@ public class AlertRepository {
             throw new AlertNotFoundException(alertId);
         }
 
-        log.debug("Fetched JSON for alertId [{}] from [{}.{}] ({} chars)", alertId, schema, viewName, result.length());
+        log.debug("Fetched JSON for alertId [{}] from view [{}] ({} chars)", alertId, viewName, result.length());
         return result;
     }
 

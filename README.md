@@ -1,10 +1,13 @@
 # alert-util-library
 
 A Spring Boot auto-configuration library that fetches alert JSON from a database view,
-validates it against a per-alert-type JSON schema, and returns a structured result.
+validates it against a JSON schema, and returns a structured result.
 
-Supports **multiple databases** — pass the db name and schema at runtime, the view is configured once.
-Supports **multiple alert types** — pass the alert type id at runtime, the correct schema is selected automatically.
+Each alert type has its own **DB view** and **JSON schema**, both configured once.
+At runtime the calling application supplies the `alertId` and `alertTypeId` — the library
+picks the right view and schema automatically.
+
+Supports **multiple databases** — pass the db name at runtime, all views are configured once.
 
 ## Quick Start
 
@@ -18,18 +21,29 @@ Supports **multiple alert types** — pass the alert type id at runtime, the cor
 </dependency>
 ```
 
-### 2. Configure in `application.yml`
+### 2. Configure alert types in `application.yml`
+
+Define each alert type with its own DB view and JSON schema path.
+The calling application is responsible for resolving the `alertTypeId` from the `alertId`.
 
 ```yaml
 alert-util:
-  view-name: v_alert_json        # DB view (same across all databases)
-  schema-base-path: schema       # classpath directory containing per-alert-type schema files
+  alert-types:
+    "10000":
+      view-name: v_alert_10000              # DB view for this alert type
+      schema-path: schema/10000_schema.json # JSON schema for validation
+    "20000":
+      view-name: v_alert_20000
+      schema-path: schema/20000_schema.json
+    "30000":
+      view-name: v_alert_30000
+      schema-path: schema/30000_schema.json
 ```
 
-### 3. Add per-alert-type schema files
+### 3. Add JSON schema files
 
-Place a JSON schema file for each alert type in `src/main/resources/schema/`.
-Files must follow the naming convention `{alertTypeId}_schema.json`.
+Place a schema file for each alert type in `src/main/resources/` at the path specified
+in `schema-path`.
 
 ```
 src/main/resources/
@@ -75,8 +89,7 @@ public class DataSourceConfig {
 
 ### 5. Use in your code
 
-Your application is responsible for resolving the `alertTypeId` before calling the library.
-Pass it alongside the `alertId` — the library uses it to select the correct schema.
+Your application resolves the `alertTypeId` from the `alertId` and passes both to the library.
 
 ```java
 @RestController
@@ -90,25 +103,26 @@ public class AlertController {
             @PathVariable String alertId,
             @RequestParam String alertTypeId) {
 
-        // Your application resolves dbName and schema (e.g. from config, headers, etc.)
-        return alertService.processAlert("primaryDb", "mySchema", alertId, alertTypeId);
+        // alertTypeId resolved by the calling application (e.g. "10000", "20000")
+        return alertService.processAlert("primaryDb", alertId, alertTypeId);
     }
 }
 ```
 
 ## How It Works
 
-1. **Startup** — The library auto-configures by registering `AlertService`, `AlertRepository`,
-   and `JsonSchemaValidator` beans. No database connections or schema files are loaded at startup.
+1. **Startup** — The library auto-configures `AlertService`, `AlertRepository`, and
+   `JsonSchemaValidator` beans. All alert-type configs are validated (view name and schema path
+   must be present for every registered type). No DB connections or schema files are loaded yet.
 
-2. **Runtime** — When you call `alertService.processAlert(dbName, schema, alertId, alertTypeId)`:
+2. **Runtime** — When you call `alertService.processAlert(dbName, alertId, alertTypeId)`:
+   - Looks up the `alertTypeId` in the configured `alert-types` map → resolves `viewName` + `schemaPath`
    - Resolves the `DataSource` bean by `dbName` from the Spring context
      (cached after first lookup per dbName)
-   - Queries `SELECT {json-column} FROM {schema}.{view-name} WHERE {alert-id-column} = ?`
+   - Queries `SELECT {json-column} FROM {viewName} WHERE {alert-id-column} = ?`
    - Handles both `VARCHAR` and `CLOB` columns transparently
    - Parses the JSON string into a `JsonNode`
-   - Loads and compiles the schema for `alertTypeId` from `{schema-base-path}/{alertTypeId}_schema.json`
-     (cached after first load per alertTypeId)
+   - Loads and compiles the schema from `schemaPath` (cached after first load per alert type)
    - Validates the JSON against the compiled schema
    - Returns `AlertResult` with the validated JSON
 
@@ -116,16 +130,18 @@ public class AlertController {
 
 | Property | Required | Default | Description |
 |---|---|---|---|
-| `alert-util.view-name` | **Yes** | — | DB view to query (same across all databases) |
-| `alert-util.schema-base-path` | **Yes** | — | Classpath directory containing `{alertTypeId}_schema.json` files |
-| `alert-util.alert-id-column` | No | `alert_id` | Column used to filter by alertId |
-| `alert-util.json-column` | No | `alert_json` | Column holding the JSON (VARCHAR or CLOB) |
+| `alert-util.alert-types` | **Yes** | — | Map of alertTypeId → `{view-name, schema-path}` |
+| `alert-util.alert-types.<id>.view-name` | **Yes** | — | DB view for this alert type |
+| `alert-util.alert-types.<id>.schema-path` | **Yes** | — | Classpath path to the JSON schema file |
+| `alert-util.alert-id-column` | No | `alert_id` | Column used to filter by alertId (shared across all alert types) |
+| `alert-util.json-column` | No | `alert_json` | Column holding the JSON, VARCHAR or CLOB (shared across all alert types) |
 
 ## Exceptions
 
 | Exception | When |
 |---|---|
-| `IllegalStateException` | No DataSource bean found for the given dbName, or schema file not found on classpath |
+| `IllegalArgumentException` | alertTypeId not found in the configured alert-types map |
+| `IllegalStateException` | No DataSource bean found for dbName, or schema file missing from classpath |
 | `AlertNotFoundException` | No row found in the DB view for the given alertId |
 | `AlertProcessingException` | DB view returns malformed JSON or CLOB read failure |
 | `AlertValidationException` | JSON fails schema validation (contains all error messages) |
@@ -134,19 +150,19 @@ public class AlertController {
 
 ```
 src/main/java/com/example/alertutil/
-├── AlertUtilAutoConfiguration.java    # Auto-config entry point
+├── AlertUtilAutoConfiguration.java    # Auto-config entry point — validates config, wires beans
 ├── config/
-│   └── AlertUtilProperties.java       # @ConfigurationProperties (view-name, schema-base-path)
+│   └── AlertUtilProperties.java       # @ConfigurationProperties — alert-types map, column names
 ├── exception/
 │   ├── AlertNotFoundException.java
 │   ├── AlertProcessingException.java
 │   └── AlertValidationException.java
 ├── model/
-│   └── AlertResult.java               # Result DTO
+│   └── AlertResult.java               # Result DTO returned to the caller
 ├── repository/
-│   └── AlertRepository.java           # DB view query + CLOB handling
+│   └── AlertRepository.java           # DB view query + CLOB handling (view resolved per call)
 ├── service/
-│   └── AlertService.java              # Main orchestrator (multi-db, cached JdbcTemplates)
+│   └── AlertService.java              # Main orchestrator — resolves type config, fetches, validates
 └── validator/
-    └── JsonSchemaValidator.java        # Per-alert-type schema validation (lazy-loaded, cached)
+    └── JsonSchemaValidator.java        # Schema validation — lazy-loads and caches per schema path
 ```

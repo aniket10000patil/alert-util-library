@@ -1,6 +1,7 @@
 package com.example.alertutil;
 
 import com.example.alertutil.config.AlertUtilProperties;
+import com.example.alertutil.config.AlertUtilProperties.AlertTypeProperties;
 import com.example.alertutil.repository.AlertRepository;
 import com.example.alertutil.service.AlertService;
 import com.example.alertutil.validator.JsonSchemaValidator;
@@ -13,6 +14,10 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
 import org.springframework.context.ApplicationContext;
 import org.springframework.context.annotation.Bean;
 
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+
 /**
  * Auto-configuration for alert-util-library.
  *
@@ -22,15 +27,17 @@ import org.springframework.context.annotation.Bean;
  * Required configuration in the consuming app's application.yml:
  *
  *   alert-util:
- *     view-name: v_alert_json                  # DB view (same across all databases)
- *     schema-path: schema/alert-schema.json    # classpath path to JSON schema
+ *     alert-types:
+ *       "10000":
+ *         view-name: v_alert_10000
+ *         schema-path: schema/10000_schema.json
+ *       "20000":
+ *         view-name: v_alert_20000
+ *         schema-path: schema/20000_schema.json
  *
- * The db-name is passed at runtime:
+ * The dbName and alertTypeId are passed at runtime:
  *
- *   alertService.processAlert("primaryDb", "ALERT-001");
- *
- * The consuming app must register DataSource beans whose names match the
- * dbName values used at runtime.
+ *   alertService.processAlert("primaryDb", "ALERT-001", "10000");
  */
 @AutoConfiguration
 @EnableConfigurationProperties(AlertUtilProperties.class)
@@ -38,46 +45,36 @@ public class AlertUtilAutoConfiguration {
 
     private static final Logger log = LoggerFactory.getLogger(AlertUtilAutoConfiguration.class);
 
-    /**
-     * Creates JsonSchemaValidator with the base path for per-alert-type schemas.
-     * Schemas are loaded lazily on first use for each alertTypeId.
-     */
     @Bean
     @ConditionalOnMissingBean
-    public JsonSchemaValidator jsonSchemaValidator(AlertUtilProperties properties) {
-        validateProperties(properties);
-        log.info("alert-util: Initialising JsonSchemaValidator with schemaBasePath [{}]",
-                properties.getSchemaBasePath());
-        return new JsonSchemaValidator(properties.getSchemaBasePath());
+    public JsonSchemaValidator jsonSchemaValidator() {
+        log.info("alert-util: Initialising JsonSchemaValidator (schemas loaded lazily per alert type)");
+        return new JsonSchemaValidator();
     }
 
-    /**
-     * Creates AlertRepository with the configured view name and column names.
-     */
     @Bean
     @ConditionalOnMissingBean
     public AlertRepository alertRepository(AlertUtilProperties properties) {
-        log.info("alert-util: AlertRepository configured — view: [{}], idColumn: [{}], jsonColumn: [{}]",
-                properties.getViewName(), properties.getAlertIdColumn(), properties.getJsonColumn());
+        log.info("alert-util: AlertRepository configured — idColumn: [{}], jsonColumn: [{}]",
+                properties.getAlertIdColumn(), properties.getJsonColumn());
         return new AlertRepository(
-                properties.getViewName(),
                 properties.getAlertIdColumn(),
                 properties.getJsonColumn()
         );
     }
 
-    /**
-     * Creates the main AlertService.
-     * DataSource resolution happens lazily at runtime when processAlert() is called.
-     */
     @Bean
     @ConditionalOnMissingBean
     public AlertService alertService(AlertRepository alertRepository,
                                      JsonSchemaValidator jsonSchemaValidator,
                                      ObjectMapper objectMapper,
+                                     AlertUtilProperties properties,
                                      ApplicationContext applicationContext) {
-        log.info("alert-util: AlertService ready");
-        return new AlertService(alertRepository, jsonSchemaValidator, objectMapper, applicationContext);
+        validateProperties(properties);
+        log.info("alert-util: AlertService ready — {} alert type(s) configured: {}",
+                properties.getAlertTypes().size(), properties.getAlertTypes().keySet());
+        return new AlertService(alertRepository, jsonSchemaValidator, objectMapper,
+                properties.getAlertTypes(), applicationContext);
     }
 
     // -------------------------------------------------------------------------
@@ -85,21 +82,33 @@ public class AlertUtilAutoConfiguration {
     // -------------------------------------------------------------------------
 
     private void validateProperties(AlertUtilProperties properties) {
-        StringBuilder errors = new StringBuilder();
+        List<String> errors = new ArrayList<>();
 
-        if (isBlank(properties.getViewName()))
-            errors.append("\n  - alert-util.view-name is required");
+        if (properties.getAlertTypes() == null || properties.getAlertTypes().isEmpty()) {
+            errors.add("alert-util.alert-types must have at least one entry");
+        } else {
+            for (Map.Entry<String, AlertTypeProperties> entry : properties.getAlertTypes().entrySet()) {
+                String typeId = entry.getKey();
+                AlertTypeProperties type = entry.getValue();
 
-        if (isBlank(properties.getSchemaBasePath()))
-            errors.append("\n  - alert-util.schema-base-path is required");
+                if (isBlank(type.getViewName()))
+                    errors.add("alert-util.alert-types." + typeId + ".view-name is required");
+
+                if (isBlank(type.getSchemaPath()))
+                    errors.add("alert-util.alert-types." + typeId + ".schema-path is required");
+            }
+        }
 
         if (!errors.isEmpty()) {
             throw new IllegalStateException(
-                "\n[alert-util] Missing required configuration:" + errors
-                + "\n\nAdd the following to your application.yml:\n\n"
+                "\n[alert-util] Invalid configuration:\n  - "
+                + String.join("\n  - ", errors)
+                + "\n\nExample configuration:\n\n"
                 + "  alert-util:\n"
-                + "    view-name: v_alert_json\n"
-                + "    schema-base-path: schema\n"
+                + "    alert-types:\n"
+                + "      \"10000\":\n"
+                + "        view-name: v_alert_10000\n"
+                + "        schema-path: schema/10000_schema.json\n"
             );
         }
     }

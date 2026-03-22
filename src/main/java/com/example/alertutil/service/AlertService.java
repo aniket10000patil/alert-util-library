@@ -1,5 +1,6 @@
 package com.example.alertutil.service;
 
+import com.example.alertutil.config.AlertUtilProperties.AlertTypeProperties;
 import com.example.alertutil.exception.AlertProcessingException;
 import com.example.alertutil.model.AlertResult;
 import com.example.alertutil.repository.AlertRepository;
@@ -12,35 +13,38 @@ import org.springframework.context.ApplicationContext;
 import org.springframework.jdbc.core.JdbcTemplate;
 
 import javax.sql.DataSource;
+import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Main entry point for the consuming application.
  *
- * A single AlertService bean that can work with multiple databases.
- * The caller passes only the dbName at runtime — the view name is
- * configured once in application.yml and is the same across all databases.
+ * A single AlertService bean that supports multiple databases and multiple alert types.
+ * The caller supplies the dbName, alertId and alertTypeId at runtime. The library
+ * resolves the correct DB view and JSON schema from config for each alertTypeId.
  *
  * Usage:
  *
- *   alertService.processAlert("primaryDb",   "mySchema", "ALERT-001", "10000");
- *   alertService.processAlert("secondaryDb", "mySchema", "ALERT-002", "20000");
+ *   alertService.processAlert("primaryDb", "ALERT-001", "10000");
+ *   alertService.processAlert("secondaryDb", "ALERT-002", "20000");
  *
  * Pipeline:
- *   1. Resolve JdbcTemplate for the given dbName (cached after first lookup)
- *   2. Query the configured view by alertId → returns JSON string
- *   3. Parse the JSON string into a JsonNode
- *   4. Validate against the schema for the given alertTypeId (lazy-loaded and cached)
- *   5. Return AlertResult to the caller
+ *   1. Look up alertTypeId in the configured alert-types map → resolves viewName + schemaPath
+ *   2. Resolve JdbcTemplate for dbName (cached after first lookup)
+ *   3. Query the resolved view by alertId → returns JSON string
+ *   4. Parse the JSON string into a JsonNode
+ *   5. Validate against the resolved schema (lazy-loaded and cached)
+ *   6. Return AlertResult to the caller
  */
 public class AlertService {
 
     private static final Logger log = LoggerFactory.getLogger(AlertService.class);
 
-    private final AlertRepository      alertRepository;
-    private final JsonSchemaValidator   jsonSchemaValidator;
-    private final ObjectMapper          objectMapper;
-    private final ApplicationContext    applicationContext;
+    private final AlertRepository                   alertRepository;
+    private final JsonSchemaValidator               jsonSchemaValidator;
+    private final ObjectMapper                      objectMapper;
+    private final Map<String, AlertTypeProperties>  alertTypes;
+    private final ApplicationContext                applicationContext;
 
     /**
      * Cache of dbName → JdbcTemplate.
@@ -50,54 +54,62 @@ public class AlertService {
 
     public AlertService(AlertRepository alertRepository,
                         JsonSchemaValidator jsonSchemaValidator,
-                        ObjectMapper objectMapper) {
-        this(alertRepository, jsonSchemaValidator, objectMapper, null);
+                        ObjectMapper objectMapper,
+                        Map<String, AlertTypeProperties> alertTypes) {
+        this(alertRepository, jsonSchemaValidator, objectMapper, alertTypes, null);
     }
 
     public AlertService(AlertRepository alertRepository,
                         JsonSchemaValidator jsonSchemaValidator,
                         ObjectMapper objectMapper,
+                        Map<String, AlertTypeProperties> alertTypes,
                         ApplicationContext applicationContext) {
-        this.alertRepository     = alertRepository;
-        this.jsonSchemaValidator  = jsonSchemaValidator;
-        this.objectMapper        = objectMapper;
-        this.applicationContext  = applicationContext;
+        this.alertRepository    = alertRepository;
+        this.jsonSchemaValidator = jsonSchemaValidator;
+        this.objectMapper       = objectMapper;
+        this.alertTypes         = alertTypes;
+        this.applicationContext = applicationContext;
     }
 
     /**
-     * Processes an alert: resolves the database by name, queries the configured view,
-     * parses and validates the JSON.
+     * Processes an alert: looks up alert-type config, queries the correct DB view,
+     * parses and validates the JSON against the correct schema.
      *
      * @param dbName      name of the DataSource bean in the Spring context (e.g. "primaryDb")
-     * @param schema      database schema name used to qualify the view (e.g. "mySchema")
      * @param alertId     the unique alert identifier
-     * @param alertTypeId the alert type identifier used to select the JSON schema (e.g. "10000")
+     * @param alertTypeId the alert type identifier used to resolve view and schema (e.g. "10000")
      * @return AlertResult containing the validated JsonNode
      *
-     * @throws IllegalStateException if no DataSource bean found for dbName
+     * @throws IllegalArgumentException if alertTypeId is not found in config
+     * @throws IllegalStateException    if no DataSource bean found for dbName
      * @throws com.example.alertutil.exception.AlertNotFoundException   if no row found in DB view
      * @throws com.example.alertutil.exception.AlertValidationException if JSON fails schema validation
      * @throws com.example.alertutil.exception.AlertProcessingException if DB view returns malformed JSON
      */
-    public AlertResult processAlert(String dbName, String schema, String alertId, String alertTypeId) {
-        log.info("Processing alert [{}] — db: [{}], schema: [{}], alertTypeId: [{}]", alertId, dbName, schema, alertTypeId);
+    public AlertResult processAlert(String dbName, String alertId, String alertTypeId) {
+        log.info("Processing alert [{}] — db: [{}], alertTypeId: [{}]", alertId, dbName, alertTypeId);
 
-        // Step 1 — resolve JdbcTemplate (cached)
+        // Step 1 — resolve view name and schema path for this alert type
+        AlertTypeProperties typeConfig = resolveAlertTypeConfig(alertTypeId);
+        log.debug("Step 1 - Resolved alertTypeId [{}] → view: [{}], schema: [{}]",
+                alertTypeId, typeConfig.getViewName(), typeConfig.getSchemaPath());
+
+        // Step 2 — resolve JdbcTemplate (cached)
         JdbcTemplate jdbcTemplate = resolveJdbcTemplate(dbName);
 
-        // Step 2 — query the DB view
-        log.debug("Step 2 - Fetching JSON for alertId [{}]", alertId);
-        String jsonString = alertRepository.fetchByAlertId(jdbcTemplate, schema, alertId);
+        // Step 3 — query the DB view for this alert type
+        log.debug("Step 3 - Fetching JSON for alertId [{}] from view [{}]", alertId, typeConfig.getViewName());
+        String jsonString = alertRepository.fetchByAlertId(jdbcTemplate, typeConfig.getViewName(), alertId);
 
-        // Step 3 — parse JSON string into JsonNode
-        log.debug("Step 3 - Parsing JSON for alertId [{}]", alertId);
+        // Step 4 — parse JSON string into JsonNode
+        log.debug("Step 4 - Parsing JSON for alertId [{}]", alertId);
         JsonNode json = parseJson(alertId, jsonString);
 
-        // Step 4 — validate against the schema for the given alertTypeId
-        log.debug("Step 4 - Validating alertId [{}] against alertTypeId [{}]", alertId, alertTypeId);
-        jsonSchemaValidator.validate(alertId, alertTypeId, json);
+        // Step 5 — validate against the schema for this alert type
+        log.debug("Step 5 - Validating alertId [{}] against schema [{}]", alertId, typeConfig.getSchemaPath());
+        jsonSchemaValidator.validate(alertId, typeConfig.getSchemaPath(), json);
 
-        log.info("Alert [{}] processed successfully", alertId);
+        log.info("Alert [{}] processed successfully (alertTypeId [{}])", alertId, alertTypeId);
         return new AlertResult(alertId, json);
     }
 
@@ -105,11 +117,25 @@ public class AlertService {
     // Private helpers
     // -------------------------------------------------------------------------
 
+    private AlertTypeProperties resolveAlertTypeConfig(String alertTypeId) {
+        AlertTypeProperties config = alertTypes.get(alertTypeId);
+        if (config == null) {
+            throw new IllegalArgumentException(
+                "\n[alert-util] No configuration found for alertTypeId [" + alertTypeId + "].\n"
+                + "Register it in your application.yml:\n\n"
+                + "  alert-util:\n"
+                + "    alert-types:\n"
+                + "      \"" + alertTypeId + "\":\n"
+                + "        view-name: v_alert_" + alertTypeId + "\n"
+                + "        schema-path: schema/" + alertTypeId + "_schema.json\n"
+            );
+        }
+        return config;
+    }
+
     /**
      * Resolves a JdbcTemplate for the given dbName.
-     *
-     * On first call: looks up the DataSource bean from ApplicationContext, wraps it
-     * in a JdbcTemplate, and caches it.
+     * On first call: looks up the DataSource bean, wraps it in a JdbcTemplate, and caches it.
      * On subsequent calls: returns the cached JdbcTemplate.
      */
     JdbcTemplate resolveJdbcTemplate(String dbName) {

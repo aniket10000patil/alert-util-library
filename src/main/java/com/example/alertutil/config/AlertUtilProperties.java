@@ -2,47 +2,41 @@ package com.example.alertutil.config;
 
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
+import java.util.HashMap;
+import java.util.Map;
+
 /**
  * Configuration for the alert-util-library.
  *
- * Required configuration in the consuming app's application.yml:
+ * Each alert type must be registered under alert-util.alert-types with its own
+ * DB view name and JSON schema path:
  *
  *   alert-util:
- *     view-name: v_alert_json              # REQUIRED - DB view to query
- *     schema-base-path: schema             # REQUIRED - classpath directory containing schema files
+ *     alert-types:
+ *       "10000":
+ *         view-name: v_alert_10000
+ *         schema-path: schema/10000_schema.json
+ *       "20000":
+ *         view-name: v_alert_20000
+ *         schema-path: schema/20000_schema.json
  *
- * Schema files must be named {alertTypeId}_schema.json and placed under schema-base-path.
- * Example: src/main/resources/schema/10000_schema.json
- *
- * Optional column name overrides:
+ * Optional column name overrides (applied across all alert types):
  *
  *   alert-util:
- *     alert-id-column: alert_id            # default: alert_id
- *     json-column: alert_json              # default: alert_json
- *     alert-type-id-column: alert_type_id  # default: alert_type_id
+ *     alert-id-column: alert_id   # default: alert_id
+ *     json-column: alert_json     # default: alert_json
  *
- * The db-name and schema are passed at runtime to
- * alertService.processAlert(dbName, schema, alertId).
+ * The db-name and alert-type-id are passed at runtime to
+ * alertService.processAlert(dbName, alertId, alertTypeId).
  */
 @ConfigurationProperties(prefix = "alert-util")
 public class AlertUtilProperties {
 
     /**
-     * Name of the DB view that returns alert JSON for a given alertId.
-     * This view is the same across all databases and environments.
-     *
-     * SQL executed: SELECT {jsonColumn}, {alertTypeIdColumn} FROM {schema}.{viewName} WHERE {alertIdColumn} = ?
+     * Per-alert-type configuration keyed by alertTypeId.
+     * Each entry defines the DB view and JSON schema to use for that alert type.
      */
-    private String viewName;
-
-    /**
-     * Classpath directory containing per-alert-type JSON schema files.
-     * Schema files must be named {alertTypeId}_schema.json.
-     *
-     * Example: schema-base-path: schema
-     * → resolves to classpath:schema/10000_schema.json for alertTypeId "10000"
-     */
-    private String schemaBasePath;
+    private Map<String, AlertTypeProperties> alertTypes = new HashMap<>();
 
     /**
      * Column in the view used to filter by alertId.
@@ -56,11 +50,8 @@ public class AlertUtilProperties {
 
     // -- Getters and Setters --
 
-    public String getViewName() { return viewName; }
-    public void setViewName(String viewName) { this.viewName = viewName; }
-
-    public String getSchemaBasePath() { return schemaBasePath; }
-    public void setSchemaBasePath(String schemaBasePath) { this.schemaBasePath = schemaBasePath; }
+    public Map<String, AlertTypeProperties> getAlertTypes() { return alertTypes; }
+    public void setAlertTypes(Map<String, AlertTypeProperties> alertTypes) { this.alertTypes = alertTypes; }
 
     public String getAlertIdColumn() { return alertIdColumn; }
     public void setAlertIdColumn(String alertIdColumn) { this.alertIdColumn = alertIdColumn; }
@@ -68,4 +59,27 @@ public class AlertUtilProperties {
     public String getJsonColumn() { return jsonColumn; }
     public void setJsonColumn(String jsonColumn) { this.jsonColumn = jsonColumn; }
 
+    /**
+     * Configuration for a single alert type.
+     */
+    public static class AlertTypeProperties {
+
+        /**
+         * DB view to query for this alert type.
+         * Can include a schema qualifier if needed (e.g. myschema.v_alert_10000).
+         */
+        private String viewName;
+
+        /**
+         * Classpath path to the JSON schema file for this alert type.
+         * Example: schema/10000_schema.json
+         */
+        private String schemaPath;
+
+        public String getViewName() { return viewName; }
+        public void setViewName(String viewName) { this.viewName = viewName; }
+
+        public String getSchemaPath() { return schemaPath; }
+        public void setSchemaPath(String schemaPath) { this.schemaPath = schemaPath; }
+    }
 }
