@@ -3,6 +3,7 @@ package com.example.alertutil;
 import com.example.alertutil.config.AlertUtilProperties;
 import com.example.alertutil.config.AlertUtilProperties.AlertTypeProperties;
 import com.example.alertutil.repository.AlertRepository;
+import com.example.alertutil.repository.ViewConfigRepository;
 import com.example.alertutil.service.AlertService;
 import com.example.alertutil.validator.JsonSchemaValidator;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -13,7 +14,9 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.ApplicationContext;
 import org.springframework.context.annotation.Bean;
+import org.springframework.jdbc.core.JdbcTemplate;
 
+import javax.sql.DataSource;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -27,15 +30,14 @@ import java.util.Map;
  * Required configuration in the consuming app's application.yml:
  *
  *   alert-util:
- *     alert-types:
- *       "10000":
- *         view-name: v_alert_10000
- *         schema-path: schema/10000_schema.json
- *       "20000":
- *         view-name: v_alert_20000
- *         schema-path: schema/20000_schema.json
+ *     view-config-db-name: configDb          # DataSource bean that holds the config table
+ *     view-config-table: alert_view_config   # table: (alert_type, view_name, schema_key)
+ *     schema-map:
+ *       credit: schema/credit_schema.json
+ *       equity: schema/equity_schema.json
  *
- * The dbName, alertInternalId and alertTypeId are passed at runtime:
+ * At startup the library reads all rows from the view config table and builds an in-memory
+ * map of alertTypeId → (viewName, schemaPath). At runtime the caller passes the alertTypeId:
  *
  *   alertService.processAlert("primaryDb", 123456L, "10000");
  */
@@ -63,6 +65,14 @@ public class AlertUtilAutoConfiguration {
         );
     }
 
+    /**
+     * Creates the main AlertService.
+     *
+     * Alert type configurations are loaded from the DB config table at startup using
+     * the DataSource bean named by alert-util.view-config-db-name. The resulting
+     * alertType → (viewName, schemaPath) map is passed to AlertService, which uses it
+     * to resolve the correct view and schema on each processAlert call.
+     */
     @Bean
     @ConditionalOnMissingBean
     public AlertService alertService(AlertRepository alertRepository,
@@ -71,44 +81,87 @@ public class AlertUtilAutoConfiguration {
                                      AlertUtilProperties properties,
                                      ApplicationContext applicationContext) {
         validateProperties(properties);
-        log.info("alert-util: AlertService ready — {} alert type(s) configured: {}",
-                properties.getAlertTypes().size(), properties.getAlertTypes().keySet());
+
+        Map<String, AlertTypeProperties> alertTypes = loadAlertTypesFromDb(properties, applicationContext);
+
+        log.info("alert-util: AlertService ready — {} alert type(s) loaded from DB config table [{}]: {}",
+                alertTypes.size(), properties.getViewConfigTable(), alertTypes.keySet());
+
         return new AlertService(alertRepository, jsonSchemaValidator, objectMapper,
-                properties.getAlertTypes(), applicationContext);
+                alertTypes, applicationContext);
     }
 
     // -------------------------------------------------------------------------
     // Private helpers
     // -------------------------------------------------------------------------
 
+    /**
+     * Resolves the DataSource bean for the config table, creates a ViewConfigRepository,
+     * and loads all alert type configs from the DB.
+     */
+    private Map<String, AlertTypeProperties> loadAlertTypesFromDb(AlertUtilProperties properties,
+                                                                    ApplicationContext context) {
+        String beanName = properties.getViewConfigDbName();
+        log.info("alert-util: Loading view config from table [{}] using DataSource bean [{}]",
+                properties.getViewConfigTable(), beanName);
+
+        DataSource dataSource = resolveDataSource(context, beanName);
+        JdbcTemplate jdbcTemplate = new JdbcTemplate(dataSource);
+
+        ViewConfigRepository viewConfigRepository = new ViewConfigRepository(
+                jdbcTemplate,
+                properties.getViewConfigTable(),
+                properties.getAlertTypeColumn(),
+                properties.getViewNameColumn(),
+                properties.getSchemaKeyColumn()
+        );
+
+        return viewConfigRepository.loadAlertTypeConfigs(properties.getSchemaMap());
+    }
+
+    private DataSource resolveDataSource(ApplicationContext context, String beanName) {
+        try {
+            return context.getBean(beanName, DataSource.class);
+        } catch (Exception e) {
+            throw new IllegalStateException(
+                "\n[alert-util] Could not find DataSource bean named [" + beanName + "].\n"
+                + "You set alert-util.view-config-db-name=" + beanName + "\n"
+                + "The library expects a DataSource bean with this name to be registered "
+                + "in the consuming application.\n\n"
+                + "Fix: Register a DataSource bean in your config class:\n\n"
+                + "  @Bean(\"" + beanName + "\")\n"
+                + "  @ConfigurationProperties(\"app.datasources." + beanName + "\")\n"
+                + "  public DataSource " + beanName + "() {\n"
+                + "      return DataSourceBuilder.create().build();\n"
+                + "  }\n",
+                e
+            );
+        }
+    }
+
     private void validateProperties(AlertUtilProperties properties) {
         List<String> errors = new ArrayList<>();
 
-        if (properties.getAlertTypes() == null || properties.getAlertTypes().isEmpty()) {
-            errors.add("alert-util.alert-types must have at least one entry");
-        } else {
-            for (Map.Entry<String, AlertTypeProperties> entry : properties.getAlertTypes().entrySet()) {
-                String typeId = entry.getKey();
-                AlertTypeProperties type = entry.getValue();
+        if (isBlank(properties.getViewConfigDbName()))
+            errors.add("alert-util.view-config-db-name is required");
 
-                if (isBlank(type.getViewName()))
-                    errors.add("alert-util.alert-types." + typeId + ".view-name is required");
+        if (isBlank(properties.getViewConfigTable()))
+            errors.add("alert-util.view-config-table is required");
 
-                if (isBlank(type.getSchemaPath()))
-                    errors.add("alert-util.alert-types." + typeId + ".schema-path is required");
-            }
-        }
+        if (properties.getSchemaMap() == null || properties.getSchemaMap().isEmpty())
+            errors.add("alert-util.schema-map must have at least one entry");
 
         if (!errors.isEmpty()) {
             throw new IllegalStateException(
-                "\n[alert-util] Invalid configuration:\n  - "
+                "\n[alert-util] Missing required configuration:\n  - "
                 + String.join("\n  - ", errors)
                 + "\n\nExample configuration:\n\n"
                 + "  alert-util:\n"
-                + "    alert-types:\n"
-                + "      \"10000\":\n"
-                + "        view-name: v_alert_10000\n"
-                + "        schema-path: schema/10000_schema.json\n"
+                + "    view-config-db-name: configDb\n"
+                + "    view-config-table: alert_view_config\n"
+                + "    schema-map:\n"
+                + "      credit: schema/credit_schema.json\n"
+                + "      equity: schema/equity_schema.json\n"
             );
         }
     }
