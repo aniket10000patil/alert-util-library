@@ -1,45 +1,17 @@
 # alert-util-library
 
-A Spring Boot auto-configuration library that:
-1. Queries an **app-specific DB view** by `alertId` — the view handles HTML → JSON conversion
-2. Parses the returned JSON string into a `JsonNode`
-3. Validates it against a **classpath JSON schema**
-4. Returns the validated `AlertResult` to your app
+A Spring Boot auto-configuration library that fetches alert JSON from a database view,
+validates it against a JSON schema, and returns a structured result.
 
-Each consuming application configures its own view name. The library code never changes.
+Each alert type has its own **DB view** and **JSON schema**, both configured once.
+At runtime the calling application supplies the `alertInternalId` (Long) and `alertTypeId` —
+the library picks the right view and schema automatically.
 
----
+Supports **multiple databases** — pass the db name at runtime, all views are configured once.
 
-## Pipeline
+## Quick Start
 
-```
-alertId
-  │
-  ▼
-[DB View: v_alert_json_myapp]   ← HTML → JSON conversion happens HERE in SQL
-  │  returns alert_json column
-  ▼
-[Parse JSON string → JsonNode]
-  │
-  ▼
-[JSON Schema Validation]
-  │
-  ▼
-AlertResult → your app
-```
-
----
-
-## Build & Install
-
-```bash
-cd alert-util-library
-mvn clean install
-```
-
----
-
-## Add to Your App
+### 1. Add the dependency
 
 ```xml
 <dependency>
@@ -49,129 +21,148 @@ mvn clean install
 </dependency>
 ```
 
----
+### 2. Configure alert types in `application.yml`
 
-## What You Must Provide
-
-### 1. DataSource (application.yml)
-
-```yaml
-spring:
-  datasource:
-    url: jdbc:postgresql://localhost:5432/mydb
-    username: user
-    password: secret
-```
-
-### 2. DB View — must expose these two columns
-
-```sql
-CREATE VIEW v_alert_json_myapp AS
-SELECT
-    alert_id,
-    json_build_object(           -- your HTML → JSON conversion here
-        'alertId',  alert_id,
-        'title',    title_col,
-        'severity', severity_col
-    )::text AS alert_json
-FROM alerts_raw;
-```
-
-### 3. alert-util config in application.yml
+Define each alert type with its own DB view and JSON schema path.
+The calling application is responsible for resolving the `alertTypeId` from the alert.
 
 ```yaml
 alert-util:
-  view-name: v_alert_json_myapp         # REQUIRED — your app-specific DB view
-  alert-id-column: alert_id             # default, override if different
-  json-column: alert_json               # default, override if different
-  schema-path: schema/alert-schema.json # default, override if different
+  alert-types:
+    "10000":
+      view-name: v_alert_10000              # DB view for this alert type
+      schema-path: schema/10000_schema.json # JSON schema for validation
+    "20000":
+      view-name: v_alert_20000
+      schema-path: schema/20000_schema.json
+    "30000":
+      view-name: v_alert_30000
+      schema-path: schema/30000_schema.json
 ```
 
-### 4. JSON Schema on classpath
+### 3. Add JSON schema files
 
-Place your schema at:
+Place a schema file for each alert type in `src/main/resources/` at the path specified
+in `schema-path`.
+
 ```
-src/main/resources/schema/alert-schema.json
+src/main/resources/
+└── schema/
+    ├── 10000_schema.json
+    ├── 20000_schema.json
+    └── 30000_schema.json
 ```
 
----
+### 4. Register your DataSource beans
 
-## Configuration Reference
+```yaml
+# application.yml — your DB connection config
+app:
+  datasources:
+    primaryDb:
+      url: jdbc:oracle:thin:@//host1:1521/service1
+      username: user1
+      password: pass1
+    secondaryDb:
+      url: jdbc:oracle:thin:@//host2:1521/service2
+      username: user2
+      password: pass2
+```
 
-| Property | Default | Description |
-|---|---|---|
-| `alert-util.view-name` | *(required)* | DB view name for this app |
-| `alert-util.alert-id-column` | `alert_id` | Column used to look up by alertId |
-| `alert-util.json-column` | `alert_json` | Column containing the JSON string |
-| `alert-util.schema-path` | `schema/alert-schema.json` | Classpath path to JSON schema |
+```java
+@Configuration
+public class DataSourceConfig {
 
----
+    @Bean("primaryDb")
+    @ConfigurationProperties("app.datasources.primaryDb")
+    public DataSource primaryDbDataSource() {
+        return DataSourceBuilder.create().build();
+    }
 
-## Using AlertService in Your App
+    @Bean("secondaryDb")
+    @ConfigurationProperties("app.datasources.secondaryDb")
+    public DataSource secondaryDbDataSource() {
+        return DataSourceBuilder.create().build();
+    }
+}
+```
+
+### 5. Use in your code
+
+Your application resolves the `alertTypeId` and passes it along with the `alertInternalId`.
+The `alertInternalId` is a `Long` for optimal DB index performance.
 
 ```java
 @RestController
-@RequestMapping("/alerts")
 public class AlertController {
 
-    private final AlertService alertService;
+    @Autowired
+    private AlertService alertService;
 
-    public AlertController(AlertService alertService) {
-        this.alertService = alertService;
-    }
+    @GetMapping("/api/v1/alerts/{alertInternalId}")
+    public AlertResult getAlert(
+            @PathVariable Long alertInternalId,
+            @RequestParam String alertTypeId) {
 
-    @GetMapping("/{alertId}")
-    public ResponseEntity<JsonNode> getAlert(@PathVariable String alertId) {
-        AlertResult result = alertService.processAlert(alertId);
-        return ResponseEntity.ok(result.getJson());
+        return alertService.processAlert("primaryDb", alertInternalId, alertTypeId);
     }
 }
 ```
 
----
+## How It Works
 
-## Exception Handling
+1. **Startup** — The library auto-configures `AlertService`, `AlertRepository`, and
+   `JsonSchemaValidator` beans. All alert-type configs are validated (view name and schema path
+   must be present for every registered type). No DB connections or schema files are loaded yet.
 
-| Exception | When thrown |
+2. **Runtime** — When you call `alertService.processAlert(dbName, alertInternalId, alertTypeId)`:
+   - Looks up the `alertTypeId` in the configured `alert-types` map → resolves `viewName` + `schemaPath`
+   - Resolves the `DataSource` bean by `dbName` from the Spring context
+     (cached after first lookup per dbName)
+   - Queries `SELECT {json-column} FROM {viewName} WHERE {alert-internal-id-column} = ?`
+   - Handles both `VARCHAR` and `CLOB` columns transparently
+   - Parses the JSON string into a `JsonNode`
+   - Loads and compiles the schema from `schemaPath` (cached after first load per alert type)
+   - Validates the JSON against the compiled schema
+   - Returns `AlertResult` with the validated JSON
+
+## Configuration Reference
+
+| Property | Required | Default | Description |
+|---|---|---|---|
+| `alert-util.alert-types` | **Yes** | — | Map of alertTypeId → `{view-name, schema-path}` |
+| `alert-util.alert-types.<id>.view-name` | **Yes** | — | DB view for this alert type |
+| `alert-util.alert-types.<id>.schema-path` | **Yes** | — | Classpath path to the JSON schema file |
+| `alert-util.alert-internal-id-column` | No | `alert_internal_id` | Column used to filter by alertInternalId (shared across all alert types) |
+| `alert-util.json-column` | No | `alert_json` | Column holding the JSON, VARCHAR or CLOB (shared across all alert types) |
+
+## Exceptions
+
+| Exception | When |
 |---|---|
-| `AlertNotFoundException` | No row found in the view for the given alertId |
-| `AlertValidationException` | JSON fails schema validation — has `.getValidationErrors()` |
-| `AlertProcessingException` | View returned malformed/non-parseable JSON |
-
-```java
-@ExceptionHandler(AlertNotFoundException.class)
-public ResponseEntity<String> handleNotFound(AlertNotFoundException e) {
-    return ResponseEntity.status(404).body(e.getMessage());
-}
-
-@ExceptionHandler(AlertValidationException.class)
-public ResponseEntity<Set<String>> handleValidation(AlertValidationException e) {
-    return ResponseEntity.status(422).body(e.getValidationErrors());
-}
-
-@ExceptionHandler(AlertProcessingException.class)
-public ResponseEntity<String> handleProcessing(AlertProcessingException e) {
-    return ResponseEntity.status(500).body(e.getMessage());
-}
-```
-
----
+| `IllegalArgumentException` | alertTypeId not found in the configured alert-types map |
+| `IllegalStateException` | No DataSource bean found for dbName, or schema file missing from classpath |
+| `AlertNotFoundException` | No row found in the DB view for the given alertInternalId |
+| `AlertProcessingException` | DB view returns malformed JSON or CLOB read failure |
+| `AlertValidationException` | JSON fails schema validation (contains all error messages) |
 
 ## Project Structure
 
 ```
-alert-util-library/
-├── pom.xml
-└── src/main/java/com/example/alertutil/
-    ├── AlertUtilAutoConfiguration.java     ← wires all beans automatically
-    ├── config/AlertUtilProperties.java     ← application.yml bindings
-    ├── service/AlertService.java           ← inject this in your app
-    ├── repository/AlertRepository.java     ← queries the DB view
-    ├── validator/JsonSchemaValidator.java  ← validates JSON against schema
-    ├── model/AlertResult.java              ← returned to your app
-    └── exception/
-        ├── AlertNotFoundException.java
-        ├── AlertValidationException.java
-        └── AlertProcessingException.java
+src/main/java/com/example/alertutil/
+├── AlertUtilAutoConfiguration.java    # Auto-config entry point — validates config, wires beans
+├── config/
+│   └── AlertUtilProperties.java       # @ConfigurationProperties — alert-types map, column names
+├── exception/
+│   ├── AlertNotFoundException.java
+│   ├── AlertProcessingException.java
+│   └── AlertValidationException.java
+├── model/
+│   └── AlertResult.java               # Result DTO returned to the caller
+├── repository/
+│   └── AlertRepository.java           # DB view query + CLOB handling (view resolved per call)
+├── service/
+│   └── AlertService.java              # Main orchestrator — resolves type config, fetches, validates
+└── validator/
+    └── JsonSchemaValidator.java        # Schema validation — lazy-loads and caches per schema path
 ```
-# alert-util-library

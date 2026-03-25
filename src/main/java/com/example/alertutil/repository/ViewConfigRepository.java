@@ -1,5 +1,7 @@
 package com.example.alertutil.repository;
 
+import com.example.alertutil.config.AlertUtilProperties;
+import com.example.alertutil.config.AlertUtilProperties.AlertTypeProperties;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -8,17 +10,23 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
- * Loads view name mappings from a DB configuration table at startup.
+ * Loads alert type configurations from a DB table at startup.
  *
- * The configuration table maps a key (e.g. alert type) to a view name:
+ * Each row in the table maps an alert type to a DB view and a schema key.
+ * Multiple alert types can share the same view and schema key:
  *
- *   CREATE TABLE alert_view_config (
- *       alert_type VARCHAR(50) NOT NULL,
- *       view_name  VARCHAR(200) NOT NULL
- *   );
+ *   alert_type | view_name              | schema_key
+ *   -----------+------------------------+-----------
+ *   10000      | v_alert_json_credit    | credit
+ *   10001      | v_alert_json_credit    | credit
+ *   10002      | v_alert_json_credit    | credit
+ *   20000      | v_alert_json_equity    | equity
+ *
+ * The schemaKey is resolved to a classpath schema path via the schema-map in
+ * application.yml, so only one schema-map entry is needed per distinct schema.
  *
  * SQL executed:
- *   SELECT {viewKeyColumn}, {viewNameColumn} FROM {viewConfigTable}
+ *   SELECT {alertTypeColumn}, {viewNameColumn}, {schemaKeyColumn} FROM {viewConfigTable}
  */
 public class ViewConfigRepository {
 
@@ -26,55 +34,84 @@ public class ViewConfigRepository {
 
     private final JdbcTemplate jdbcTemplate;
     private final String viewConfigTable;
-    private final String viewKeyColumn;
+    private final String alertTypeColumn;
     private final String viewNameColumn;
+    private final String schemaKeyColumn;
 
     public ViewConfigRepository(JdbcTemplate jdbcTemplate,
                                 String viewConfigTable,
-                                String viewKeyColumn,
-                                String viewNameColumn) {
-        this.jdbcTemplate    = jdbcTemplate;
-        this.viewConfigTable = viewConfigTable;
-        this.viewKeyColumn   = viewKeyColumn;
-        this.viewNameColumn  = viewNameColumn;
+                                String alertTypeColumn,
+                                String viewNameColumn,
+                                String schemaKeyColumn) {
+        this.jdbcTemplate     = jdbcTemplate;
+        this.viewConfigTable  = viewConfigTable;
+        this.alertTypeColumn  = alertTypeColumn;
+        this.viewNameColumn   = viewNameColumn;
+        this.schemaKeyColumn  = schemaKeyColumn;
     }
 
     /**
-     * Loads all key → view name mappings from the configuration table.
+     * Loads all alert type configurations from the DB config table.
      *
-     * Called once at startup by {@code AlertUtilAutoConfiguration}.
+     * The schemaKey from each row is resolved to a classpath schema path using the
+     * provided schemaMap. Fails fast if a schemaKey from the DB is not found in the map.
      *
-     * @return map of viewKey → viewName (e.g. "10000" → "v_alert_json_credit")
-     * @throws IllegalStateException if the config table is empty or cannot be read
+     * @param schemaMap map of schemaKey → classpath schema path (from application.yml)
+     * @return map of alertTypeId → AlertTypeProperties (viewName + resolved schemaPath)
+     * @throws IllegalStateException if the config table is empty, or a schemaKey has no
+     *                               matching entry in schemaMap
      */
-    public Map<String, String> loadViewConfig() {
+    public Map<String, AlertTypeProperties> loadAlertTypeConfigs(Map<String, String> schemaMap) {
         String sql = String.format(
-                "SELECT %s, %s FROM %s",
-                viewKeyColumn, viewNameColumn, viewConfigTable
+                "SELECT %s, %s, %s FROM %s",
+                alertTypeColumn, viewNameColumn, schemaKeyColumn, viewConfigTable
         );
 
-        log.debug("Loading view config from table [{}]", viewConfigTable);
+        log.debug("Loading alert type configs from table [{}]", viewConfigTable);
 
-        Map<String, String> config = new LinkedHashMap<>();
+        Map<String, AlertTypeProperties> configs = new LinkedHashMap<>();
+
         jdbcTemplate.query(sql, rs -> {
             while (rs.next()) {
-                String key      = rs.getString(1);
-                String viewName = rs.getString(2);
-                if (key != null && viewName != null) {
-                    config.put(key.trim(), viewName.trim());
+                String alertType  = rs.getString(1);
+                String viewName   = rs.getString(2);
+                String schemaKey  = rs.getString(3);
+
+                if (alertType == null || viewName == null || schemaKey == null) {
+                    log.warn("Skipping row with null value — alertType=[{}], viewName=[{}], schemaKey=[{}]",
+                            alertType, viewName, schemaKey);
+                    continue;
                 }
+
+                String schemaPath = schemaMap.get(schemaKey.trim());
+                if (schemaPath == null) {
+                    throw new IllegalStateException(
+                        "[alert-util] DB config table [" + viewConfigTable + "] contains schemaKey ["
+                        + schemaKey + "] for alertType [" + alertType + "], but no matching entry "
+                        + "exists in alert-util.schema-map.\n"
+                        + "Add the following to your application.yml:\n\n"
+                        + "  alert-util:\n"
+                        + "    schema-map:\n"
+                        + "      " + schemaKey + ": schema/" + schemaKey + "_schema.json\n"
+                    );
+                }
+
+                AlertTypeProperties props = new AlertTypeProperties();
+                props.setViewName(viewName.trim());
+                props.setSchemaPath(schemaPath);
+                configs.put(alertType.trim(), props);
             }
         });
 
-        if (config.isEmpty()) {
+        if (configs.isEmpty()) {
             throw new IllegalStateException(
-                "[alert-util] View config table [" + viewConfigTable + "] returned no rows. "
-                + "Ensure the table exists and contains at least one key→view_name mapping."
+                "[alert-util] DB config table [" + viewConfigTable + "] returned no rows. "
+                + "Ensure the table exists and contains at least one alert type configuration."
             );
         }
 
-        log.info("alert-util: Loaded {} view mapping(s) from [{}]: {}",
-                config.size(), viewConfigTable, config);
-        return config;
+        log.info("alert-util: Loaded {} alert type config(s) from [{}]: {}",
+                configs.size(), viewConfigTable, configs.keySet());
+        return configs;
     }
 }

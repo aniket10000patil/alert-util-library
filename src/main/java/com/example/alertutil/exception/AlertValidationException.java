@@ -8,16 +8,16 @@ import java.util.Set;
  */
 public class AlertValidationException extends RuntimeException {
 
-    private final String alertId;
+    private final Long alertInternalId;
     private final Set<String> validationErrors;
 
-    public AlertValidationException(String alertId, Set<String> validationErrors) {
-        super("Schema validation failed for alertId: [" + alertId + "] | Errors: " + validationErrors);
-        this.alertId = alertId;
+    public AlertValidationException(Long alertInternalId, Set<String> validationErrors) {
+        super("Schema validation failed for alertInternalId: [" + alertInternalId + "] | Errors: " + validationErrors);
+        this.alertInternalId = alertInternalId;
         this.validationErrors = validationErrors;
     }
 
-    public String getAlertId() { return alertId; }
+    public Long getAlertInternalId() { return alertInternalId; }
 
     public Set<String> getValidationErrors() { return validationErrors; }
 }

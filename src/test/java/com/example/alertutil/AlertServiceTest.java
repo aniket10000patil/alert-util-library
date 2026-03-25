@@ -1,5 +1,6 @@
 package com.example.alertutil;
 
+import com.example.alertutil.config.AlertUtilProperties.AlertTypeProperties;
 import com.example.alertutil.exception.AlertNotFoundException;
 import com.example.alertutil.exception.AlertProcessingException;
 import com.example.alertutil.exception.AlertValidationException;
@@ -7,28 +8,23 @@ import com.example.alertutil.model.AlertResult;
 import com.example.alertutil.repository.AlertRepository;
 import com.example.alertutil.service.AlertService;
 import com.example.alertutil.validator.JsonSchemaValidator;
-import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.jdbc.core.JdbcTemplate;
 
 import java.util.Map;
 import java.util.Set;
 
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.eq;
+import static org.assertj.core.api.Assertions.*;
+import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
 @ExtendWith(MockitoExtension.class)
 class AlertServiceTest {
-
-    private static final String DEFAULT_VIEW = "v_alert_json_default";
-    private static final String VIEW_10000   = "v_alert_json_credit";
-    private static final String VIEW_20000   = "v_alert_json_equity";
 
     @Mock
     private AlertRepository alertRepository;
@@ -38,60 +34,79 @@ class AlertServiceTest {
 
     private final ObjectMapper objectMapper = new ObjectMapper();
 
-    // -------------------------------------------------------------------------
-    // Single-view (default view-name) — existing behaviour
-    // -------------------------------------------------------------------------
+    private AlertService alertService;
+
+    @Mock
+    private JdbcTemplate mockJdbcTemplate;
+
+    private static final String DB_NAME             = "testDb";
+    private static final Long   ALERT_INTERNAL_ID   = 123456L;
+    private static final String ALERT_TYPE          = "10000";
+    private static final String VIEW_NAME           = "v_alert_10000";
+    private static final String SCHEMA_PATH         = "schema/10000_schema.json";
+    private static final String VALID_JSON          = """
+            {
+              "alertInternalId": 123456,
+              "title": "Disk usage critical",
+              "severity": "HIGH"
+            }
+            """;
+
+    @BeforeEach
+    void setUp() {
+        Map<String, AlertTypeProperties> alertTypes = Map.of(
+                ALERT_TYPE, alertTypeProps(VIEW_NAME, SCHEMA_PATH),
+                "20000",    alertTypeProps("v_alert_20000", "schema/20000_schema.json")
+        );
+        alertService = spy(new AlertService(alertRepository, jsonSchemaValidator, objectMapper, alertTypes));
+        doReturn(mockJdbcTemplate).when(alertService).resolveJdbcTemplate(anyString());
+    }
 
     @Test
-    void processAlert_happyPath_returnsValidatedResult() throws Exception {
-        AlertService alertService = serviceWithDefaultView(DEFAULT_VIEW);
+    void processAlert_success_returnsAlertResult() {
+        when(alertRepository.fetchByAlertInternalId(any(JdbcTemplate.class), anyString(), anyLong()))
+                .thenReturn(VALID_JSON);
+        doNothing().when(jsonSchemaValidator).validate(anyLong(), anyString(), any());
 
-        String alertId = "ALERT-001";
-        String jsonFromView = """
-                {
-                  "alertId":   "ALERT-001",
-                  "alertType": "10000",
-                  "title":     "Server Down",
-                  "severity":  "HIGH"
-                }
-                """;
-
-        when(alertRepository.fetchJsonByAlertId(alertId, DEFAULT_VIEW)).thenReturn(jsonFromView);
-        doNothing().when(jsonSchemaValidator).validate(eq(alertId), any(JsonNode.class));
-
-        AlertResult result = alertService.processAlert(alertId);
+        AlertResult result = alertService.processAlert(DB_NAME, ALERT_INTERNAL_ID, ALERT_TYPE);
 
         assertThat(result).isNotNull();
-        assertThat(result.getAlertId()).isEqualTo(alertId);
+        assertThat(result.getAlertInternalId()).isEqualTo(ALERT_INTERNAL_ID);
         assertThat(result.getJson().get("severity").asText()).isEqualTo("HIGH");
 
-        verify(alertRepository).fetchJsonByAlertId(alertId, DEFAULT_VIEW);
-        verify(jsonSchemaValidator).validate(eq(alertId), any(JsonNode.class));
+        verify(alertRepository).fetchByAlertInternalId(mockJdbcTemplate, VIEW_NAME, ALERT_INTERNAL_ID);
+        verify(jsonSchemaValidator).validate(eq(ALERT_INTERNAL_ID), eq(SCHEMA_PATH), any());
+        verify(alertService).resolveJdbcTemplate(DB_NAME);
+    }
+
+    @Test
+    void processAlert_unknownAlertType_throwsIllegalArgumentException() {
+        assertThatThrownBy(() -> alertService.processAlert(DB_NAME, ALERT_INTERNAL_ID, "99999"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("99999");
+
+        verifyNoInteractions(alertRepository);
+        verifyNoInteractions(jsonSchemaValidator);
     }
 
     @Test
     void processAlert_alertNotFound_throwsAlertNotFoundException() {
-        AlertService alertService = serviceWithDefaultView(DEFAULT_VIEW);
+        when(alertRepository.fetchByAlertInternalId(any(JdbcTemplate.class), anyString(), anyLong()))
+                .thenThrow(new AlertNotFoundException(ALERT_INTERNAL_ID));
 
-        String alertId = "MISSING-999";
-        when(alertRepository.fetchJsonByAlertId(alertId, DEFAULT_VIEW))
-                .thenThrow(new AlertNotFoundException(alertId));
-
-        assertThatThrownBy(() -> alertService.processAlert(alertId))
+        assertThatThrownBy(() -> alertService.processAlert(DB_NAME, ALERT_INTERNAL_ID, ALERT_TYPE))
                 .isInstanceOf(AlertNotFoundException.class)
-                .hasMessageContaining("MISSING-999");
+                .hasMessageContaining(ALERT_INTERNAL_ID.toString());
 
         verifyNoInteractions(jsonSchemaValidator);
     }
 
     @Test
     void processAlert_malformedJson_throwsAlertProcessingException() {
-        AlertService alertService = serviceWithDefaultView(DEFAULT_VIEW);
+        when(alertRepository.fetchByAlertInternalId(any(JdbcTemplate.class), anyString(), anyLong()))
+                .thenReturn("NOT_VALID_JSON{{");
 
-        String alertId = "ALERT-002";
-        when(alertRepository.fetchJsonByAlertId(alertId, DEFAULT_VIEW)).thenReturn("NOT_VALID_JSON{{{{");
-
-        assertThatThrownBy(() -> alertService.processAlert(alertId))
+        assertThatThrownBy(() -> alertService.processAlert(DB_NAME, ALERT_INTERNAL_ID, ALERT_TYPE))
                 .isInstanceOf(AlertProcessingException.class)
                 .hasMessageContaining("invalid JSON");
 
@@ -100,99 +115,68 @@ class AlertServiceTest {
 
     @Test
     void processAlert_validationFails_throwsAlertValidationException() {
-        AlertService alertService = serviceWithDefaultView(DEFAULT_VIEW);
+        when(alertRepository.fetchByAlertInternalId(any(JdbcTemplate.class), anyString(), anyLong()))
+                .thenReturn("{\"alertInternalId\": 123456}");
+        doThrow(new AlertValidationException(ALERT_INTERNAL_ID, Set.of("title is required")))
+                .when(jsonSchemaValidator).validate(eq(ALERT_INTERNAL_ID), eq(SCHEMA_PATH), any());
 
-        String alertId = "ALERT-003";
-        String jsonFromView = "{\"alertId\":\"ALERT-003\",\"alertType\":\"10000\"}";
-
-        when(alertRepository.fetchJsonByAlertId(alertId, DEFAULT_VIEW)).thenReturn(jsonFromView);
-        doThrow(new AlertValidationException(alertId, Set.of("$.title: is missing")))
-                .when(jsonSchemaValidator).validate(eq(alertId), any(JsonNode.class));
-
-        assertThatThrownBy(() -> alertService.processAlert(alertId))
+        assertThatThrownBy(() -> alertService.processAlert(DB_NAME, ALERT_INTERNAL_ID, ALERT_TYPE))
                 .isInstanceOf(AlertValidationException.class)
-                .hasMessageContaining("$.title: is missing");
+                .hasMessageContaining("title is required");
     }
 
     @Test
-    void processAlert_noDefaultView_throwsIllegalStateException() {
-        AlertService alertService = serviceWithDefaultView(null);
+    void processAlert_sameDbCalledTwice_cachesJdbcTemplate() {
+        when(alertRepository.fetchByAlertInternalId(any(JdbcTemplate.class), anyString(), anyLong()))
+                .thenReturn(VALID_JSON);
+        doNothing().when(jsonSchemaValidator).validate(anyLong(), anyString(), any());
 
-        assertThatThrownBy(() -> alertService.processAlert("ALERT-001"))
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("view-name");
-    }
+        alertService.processAlert(DB_NAME, ALERT_INTERNAL_ID, ALERT_TYPE);
+        alertService.processAlert(DB_NAME, 789012L, ALERT_TYPE);
 
-    // -------------------------------------------------------------------------
-    // Multi-view — DB config table driven
-    // -------------------------------------------------------------------------
-
-    @Test
-    void processAlert_withViewKey_selectsCorrectViewFromDbConfig() throws Exception {
-        Map<String, String> viewConfig = Map.of("10000", VIEW_10000, "20000", VIEW_20000);
-        AlertService alertService = serviceWithViewConfig(viewConfig);
-
-        String alertId = "ALERT-100";
-        String jsonFromView = "{\"alertId\":\"ALERT-100\",\"alertType\":\"10000\",\"title\":\"Limit Breach\"}";
-
-        when(alertRepository.fetchJsonByAlertId(alertId, VIEW_10000)).thenReturn(jsonFromView);
-        doNothing().when(jsonSchemaValidator).validate(eq(alertId), any(JsonNode.class));
-
-        AlertResult result = alertService.processAlert(alertId, "10000");
-
-        assertThat(result.getAlertId()).isEqualTo(alertId);
-        assertThat(result.getJson().get("title").asText()).isEqualTo("Limit Breach");
-        verify(alertRepository).fetchJsonByAlertId(alertId, VIEW_10000);
+        verify(alertService, times(2)).resolveJdbcTemplate(DB_NAME);
     }
 
     @Test
-    void processAlert_withViewKey_differentTypeUsesCorrectView() throws Exception {
-        Map<String, String> viewConfig = Map.of("10000", VIEW_10000, "20000", VIEW_20000);
-        AlertService alertService = serviceWithViewConfig(viewConfig);
+    void processAlert_differentAlertTypes_useCorrectViewAndSchema() {
+        when(alertRepository.fetchByAlertInternalId(any(JdbcTemplate.class), anyString(), anyLong()))
+                .thenReturn(VALID_JSON);
+        doNothing().when(jsonSchemaValidator).validate(anyLong(), anyString(), any());
 
-        String alertId = "ALERT-200";
-        String jsonFromView = "{\"alertId\":\"ALERT-200\",\"alertType\":\"20000\",\"title\":\"Price Move\"}";
+        alertService.processAlert(DB_NAME, ALERT_INTERNAL_ID, "10000");
+        alertService.processAlert(DB_NAME, 789012L, "20000");
 
-        when(alertRepository.fetchJsonByAlertId(alertId, VIEW_20000)).thenReturn(jsonFromView);
-        doNothing().when(jsonSchemaValidator).validate(eq(alertId), any(JsonNode.class));
-
-        AlertResult result = alertService.processAlert(alertId, "20000");
-
-        assertThat(result.getAlertId()).isEqualTo(alertId);
-        verify(alertRepository).fetchJsonByAlertId(alertId, VIEW_20000);
+        verify(alertRepository).fetchByAlertInternalId(mockJdbcTemplate, "v_alert_10000", ALERT_INTERNAL_ID);
+        verify(alertRepository).fetchByAlertInternalId(mockJdbcTemplate, "v_alert_20000", 789012L);
+        verify(jsonSchemaValidator).validate(eq(ALERT_INTERNAL_ID), eq("schema/10000_schema.json"), any());
+        verify(jsonSchemaValidator).validate(eq(789012L), eq("schema/20000_schema.json"), any());
     }
 
     @Test
-    void processAlert_unknownViewKey_throwsIllegalArgumentException() {
-        Map<String, String> viewConfig = Map.of("10000", VIEW_10000);
-        AlertService alertService = serviceWithViewConfig(viewConfig);
+    void processAlert_differentDbNames_resolvesSeparately() {
+        JdbcTemplate anotherJdbcTemplate = mock(JdbcTemplate.class);
+        doReturn(mockJdbcTemplate).when(alertService).resolveJdbcTemplate("db1");
+        doReturn(anotherJdbcTemplate).when(alertService).resolveJdbcTemplate("db2");
 
-        assertThatThrownBy(() -> alertService.processAlert("ALERT-001", "99999"))
-                .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("99999")
-                .hasMessageContaining("10000");
-    }
+        when(alertRepository.fetchByAlertInternalId(any(JdbcTemplate.class), anyString(), anyLong()))
+                .thenReturn(VALID_JSON);
+        doNothing().when(jsonSchemaValidator).validate(anyLong(), anyString(), any());
 
-    @Test
-    void processAlert_withViewKey_butNoConfigTable_throwsIllegalStateException() {
-        AlertService alertService = serviceWithDefaultView(DEFAULT_VIEW);  // no viewConfigMap
+        alertService.processAlert("db1", ALERT_INTERNAL_ID, ALERT_TYPE);
+        alertService.processAlert("db2", 789012L, ALERT_TYPE);
 
-        assertThatThrownBy(() -> alertService.processAlert("ALERT-001", "10000"))
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("view-config-table");
+        verify(alertRepository).fetchByAlertInternalId(eq(mockJdbcTemplate), eq(VIEW_NAME), eq(ALERT_INTERNAL_ID));
+        verify(alertRepository).fetchByAlertInternalId(eq(anotherJdbcTemplate), eq(VIEW_NAME), eq(789012L));
     }
 
     // -------------------------------------------------------------------------
     // Helpers
     // -------------------------------------------------------------------------
 
-    private AlertService serviceWithDefaultView(String viewName) {
-        return new AlertService(alertRepository, jsonSchemaValidator, objectMapper,
-                viewName, null);
-    }
-
-    private AlertService serviceWithViewConfig(Map<String, String> viewConfig) {
-        return new AlertService(alertRepository, jsonSchemaValidator, objectMapper,
-                null, viewConfig);
+    private static AlertTypeProperties alertTypeProps(String viewName, String schemaPath) {
+        AlertTypeProperties props = new AlertTypeProperties();
+        props.setViewName(viewName);
+        props.setSchemaPath(schemaPath);
+        return props;
     }
 }

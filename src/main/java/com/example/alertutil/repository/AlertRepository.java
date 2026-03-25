@@ -1,6 +1,5 @@
 package com.example.alertutil.repository;
 
-import com.example.alertutil.config.AlertUtilProperties;
 import com.example.alertutil.exception.AlertNotFoundException;
 import com.example.alertutil.exception.AlertProcessingException;
 import org.slf4j.Logger;
@@ -11,57 +10,51 @@ import java.io.Reader;
 import java.sql.Clob;
 
 /**
- * Queries the configured DB view to fetch alert JSON by alertId.
+ * Queries a DB view to fetch alert JSON by alertInternalId.
  *
- * The view is responsible for HTML → JSON conversion.
- * This class simply reads whatever the view returns.
+ * The view name is resolved per call from the alert-type config — different alert types
+ * query different views. Column names are shared across all alert types and configured once.
  *
  * Handles both VARCHAR/TEXT and CLOB column types transparently.
  *
  * SQL executed:
- *   SELECT {jsonColumn} FROM {viewName} WHERE {alertIdColumn} = ?
+ *   SELECT {jsonColumn} FROM {viewName} WHERE {alertInternalIdColumn} = ?
  */
 public class AlertRepository {
 
     private static final Logger log = LoggerFactory.getLogger(AlertRepository.class);
 
-    private final JdbcTemplate jdbcTemplate;
-    private final AlertUtilProperties properties;
+    private final String alertInternalIdColumn;
+    private final String jsonColumn;
 
-    public AlertRepository(JdbcTemplate jdbcTemplate, AlertUtilProperties properties) {
-        this.jdbcTemplate = jdbcTemplate;
-        this.properties   = properties;
+    public AlertRepository(String alertInternalIdColumn, String jsonColumn) {
+        this.alertInternalIdColumn = alertInternalIdColumn;
+        this.jsonColumn            = jsonColumn;
     }
 
     /**
-     * Fetches the JSON string from the given DB view for the given alertId.
+     * Fetches the JSON string from the given view for the specified alertInternalId.
      *
-     * Supports:
-     *  - VARCHAR / TEXT  → read directly as String
-     *  - CLOB            → streamed via Reader to avoid truncation on large payloads
-     *
-     * @param alertId  the alert identifier
-     * @param viewName the DB view to query
+     * @param jdbcTemplate    the JdbcTemplate for the target database
+     * @param viewName        the DB view to query (resolved from alert-type config)
+     * @param alertInternalId the alert internal identifier (Long for DB performance)
      * @return full JSON string from the view
-     * @throws AlertNotFoundException   if no row found for alertId
+     * @throws AlertNotFoundException   if no row found for alertInternalId
      * @throws AlertProcessingException if CLOB cannot be read
      */
-    public String fetchJsonByAlertId(String alertId, String viewName) {
+    public String fetchByAlertInternalId(JdbcTemplate jdbcTemplate, String viewName, Long alertInternalId) {
         String sql = String.format(
                 "SELECT %s FROM %s WHERE %s = ?",
-                properties.getJsonColumn(),
+                jsonColumn,
                 viewName,
-                properties.getAlertIdColumn()
+                alertInternalIdColumn
         );
 
-        log.debug("Querying view [{}] for alertId [{}]", viewName, alertId);
+        log.debug("Querying view [{}] for alertInternalId [{}]", viewName, alertInternalId);
 
-        // ResultSetExtractor gives us direct control over the ResultSet.
-        // We inspect the actual Java type returned by the JDBC driver
-        // so we can handle both VARCHAR (String) and CLOB transparently.
         String result = jdbcTemplate.query(sql, rs -> {
             if (!rs.next()) {
-                return null;  // no row found — handled below
+                return null;
             }
 
             Object value = rs.getObject(1);
@@ -72,33 +65,27 @@ public class AlertRepository {
 
             // CLOB — stream the full content to avoid truncation
             if (value instanceof Clob clob) {
-                return readClob(alertId, clob);
+                return readClob(alertInternalId, clob);
             }
 
             // VARCHAR, TEXT, NVARCHAR — driver already gave us a String
             return value.toString();
 
-        }, alertId);
+        }, alertInternalId);
 
         if (result == null) {
-            throw new AlertNotFoundException(alertId);
+            throw new AlertNotFoundException(alertInternalId);
         }
 
-        log.debug("Fetched JSON for alertId [{}] ({} chars)", alertId, result.length());
+        log.debug("Fetched JSON for alertInternalId [{}] from view [{}] ({} chars)", alertInternalId, viewName, result.length());
         return result;
     }
 
     /**
      * Streams full CLOB content into a String via its Reader.
-     *
      * Uses a 4KB buffer for efficient reading.
-     * Avoids truncation that can occur with clob.getSubString() on large payloads.
-     *
-     * @param alertId used for error reporting only
-     * @param clob    the CLOB object returned by the JDBC driver
-     * @return full CLOB content as a String
      */
-    private String readClob(String alertId, Clob clob) {
+    private String readClob(Long alertInternalId, Clob clob) {
         try (Reader reader = clob.getCharacterStream()) {
             StringBuilder sb = new StringBuilder();
             char[] buffer = new char[4096];
@@ -106,11 +93,11 @@ public class AlertRepository {
             while ((charsRead = reader.read(buffer)) != -1) {
                 sb.append(buffer, 0, charsRead);
             }
-            log.debug("Read CLOB for alertId [{}] ({} chars)", alertId, sb.length());
+            log.debug("Read CLOB for alertInternalId [{}] ({} chars)", alertInternalId, sb.length());
             return sb.toString();
         } catch (Exception e) {
             throw new AlertProcessingException(
-                    alertId, "Failed to read CLOB content: " + e.getMessage(), e);
+                    alertInternalId, "Failed to read CLOB content: " + e.getMessage(), e);
         }
     }
 }

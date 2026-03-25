@@ -1,5 +1,6 @@
 package com.example.alertutil.service;
 
+import com.example.alertutil.config.AlertUtilProperties.AlertTypeProperties;
 import com.example.alertutil.exception.AlertProcessingException;
 import com.example.alertutil.model.AlertResult;
 import com.example.alertutil.repository.AlertRepository;
@@ -8,138 +9,163 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.context.ApplicationContext;
+import org.springframework.jdbc.core.JdbcTemplate;
 
-import java.util.Collections;
+import javax.sql.DataSource;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Main entry point for the consuming application.
  *
- * Orchestrates the full alert processing pipeline:
- *   1. Resolve the DB view name — either from the static default or from the DB config map
- *   2. Query the resolved view by alertId → returns JSON string
- *   3. Parse the JSON string into a JsonNode
- *   4. Extract alert type from JSON, validate against matching schema
- *   5. Return AlertResult to the caller
+ * A single AlertService bean that supports multiple databases and multiple alert types.
+ * The caller supplies the dbName, alertInternalId and alertTypeId at runtime. The library
+ * resolves the correct DB view and JSON schema from config for each alertTypeId.
  *
- * Usage in the consuming app (single view):
+ * Usage:
  *
- *   AlertResult result = alertService.processAlert("ALERT-001");
+ *   alertService.processAlert("primaryDb", 123456L, "10000");
+ *   alertService.processAlert("secondaryDb", 789012L, "20000");
  *
- * Usage when multiple views are driven by a DB config table:
- *
- *   AlertResult result = alertService.processAlert("ALERT-001", "10000");
- *   // "10000" is looked up in the DB config map → returns the mapped view name
+ * Pipeline:
+ *   1. Look up alertTypeId in the configured alert-types map → resolves viewName + schemaPath
+ *   2. Resolve JdbcTemplate for dbName (cached after first lookup)
+ *   3. Query the resolved view by alertInternalId → returns JSON string
+ *   4. Parse the JSON string into a JsonNode
+ *   5. Validate against the resolved schema (lazy-loaded and cached)
+ *   6. Return AlertResult to the caller
  */
 public class AlertService {
 
     private static final Logger log = LoggerFactory.getLogger(AlertService.class);
 
-    private final AlertRepository     alertRepository;
-    private final JsonSchemaValidator jsonSchemaValidator;
-    private final ObjectMapper        objectMapper;
-
-    /** View name to use when no viewKey is supplied (from alert-util.view-name). May be null. */
-    private final String defaultViewName;
+    private final AlertRepository                   alertRepository;
+    private final JsonSchemaValidator               jsonSchemaValidator;
+    private final ObjectMapper                      objectMapper;
+    private final Map<String, AlertTypeProperties>  alertTypes;
+    private final ApplicationContext                applicationContext;
 
     /**
-     * Map of viewKey → viewName loaded from the DB config table at startup.
-     * Empty when no view-config-table is configured.
+     * Cache of dbName → JdbcTemplate.
+     * Populated lazily on first call per dbName, reused for all subsequent calls.
      */
-    private final Map<String, String> viewConfigMap;
+    private final ConcurrentHashMap<String, JdbcTemplate> jdbcTemplateCache = new ConcurrentHashMap<>();
 
     public AlertService(AlertRepository alertRepository,
                         JsonSchemaValidator jsonSchemaValidator,
                         ObjectMapper objectMapper,
-                        String defaultViewName,
-                        Map<String, String> viewConfigMap) {
-        this.alertRepository     = alertRepository;
-        this.jsonSchemaValidator  = jsonSchemaValidator;
-        this.objectMapper         = objectMapper;
-        this.defaultViewName      = defaultViewName;
-        this.viewConfigMap        = viewConfigMap != null ? viewConfigMap : Collections.emptyMap();
+                        Map<String, AlertTypeProperties> alertTypes) {
+        this(alertRepository, jsonSchemaValidator, objectMapper, alertTypes, null);
+    }
+
+    public AlertService(AlertRepository alertRepository,
+                        JsonSchemaValidator jsonSchemaValidator,
+                        ObjectMapper objectMapper,
+                        Map<String, AlertTypeProperties> alertTypes,
+                        ApplicationContext applicationContext) {
+        this.alertRepository    = alertRepository;
+        this.jsonSchemaValidator = jsonSchemaValidator;
+        this.objectMapper       = objectMapper;
+        this.alertTypes         = alertTypes;
+        this.applicationContext = applicationContext;
     }
 
     /**
-     * Processes an alert using the default (statically configured) view name.
+     * Processes an alert: looks up alert-type config, queries the correct DB view,
+     * parses and validates the JSON against the correct schema.
      *
-     * @param alertId the unique alert identifier
+     * @param dbName          name of the DataSource bean in the Spring context (e.g. "primaryDb")
+     * @param alertInternalId the unique alert internal identifier (Long for DB performance)
+     * @param alertTypeId     the alert type identifier used to resolve view and schema (e.g. "10000")
      * @return AlertResult containing the validated JsonNode
      *
-     * @throws com.example.alertutil.exception.AlertNotFoundException   if no row found in DB view
-     * @throws com.example.alertutil.exception.AlertValidationException if JSON fails schema validation
-     * @throws com.example.alertutil.exception.AlertProcessingException if DB view returns malformed JSON
-     * @throws IllegalStateException if alert-util.view-name is not configured
-     */
-    public AlertResult processAlert(String alertId) {
-        if (defaultViewName == null || defaultViewName.isBlank()) {
-            throw new IllegalStateException(
-                "[alert-util] No default view configured. "
-                + "Set alert-util.view-name, or call processAlert(alertId, viewKey) "
-                + "to select a view from the DB config table.");
-        }
-        return processAlertWithView(alertId, defaultViewName);
-    }
-
-    /**
-     * Processes an alert by resolving the view name from the DB config table using viewKey.
-     *
-     * The DB config table must be configured via alert-util.view-config-table, and the
-     * table must contain a row with the given viewKey (e.g. alert type "10000").
-     *
-     * @param alertId the unique alert identifier
-     * @param viewKey the key used to look up the view name in the DB config map
-     * @return AlertResult containing the validated JsonNode
-     *
-     * @throws IllegalArgumentException if viewKey is not found in the DB config map
+     * @throws IllegalArgumentException if alertTypeId is not found in config
+     * @throws IllegalStateException    if no DataSource bean found for dbName
      * @throws com.example.alertutil.exception.AlertNotFoundException   if no row found in DB view
      * @throws com.example.alertutil.exception.AlertValidationException if JSON fails schema validation
      * @throws com.example.alertutil.exception.AlertProcessingException if DB view returns malformed JSON
      */
-    public AlertResult processAlert(String alertId, String viewKey) {
-        if (viewConfigMap.isEmpty()) {
-            throw new IllegalStateException(
-                "[alert-util] No DB view config map available. "
-                + "Set alert-util.view-config-table to enable DB-driven view selection.");
-        }
-        String viewName = viewConfigMap.get(viewKey);
-        if (viewName == null) {
-            throw new IllegalArgumentException(
-                "[alert-util] No view configured for key [" + viewKey + "]. "
-                + "Known keys: " + viewConfigMap.keySet());
-        }
-        return processAlertWithView(alertId, viewName);
+    public AlertResult processAlert(String dbName, Long alertInternalId, String alertTypeId) {
+        log.info("Processing alert [{}] — db: [{}], alertTypeId: [{}]", alertInternalId, dbName, alertTypeId);
+
+        // Step 1 — resolve view name and schema path for this alert type
+        AlertTypeProperties typeConfig = resolveAlertTypeConfig(alertTypeId);
+        log.debug("Step 1 - Resolved alertTypeId [{}] → view: [{}], schema: [{}]",
+                alertTypeId, typeConfig.getViewName(), typeConfig.getSchemaPath());
+
+        // Step 2 — resolve JdbcTemplate (cached)
+        JdbcTemplate jdbcTemplate = resolveJdbcTemplate(dbName);
+
+        // Step 3 — query the DB view for this alert type
+        log.debug("Step 3 - Fetching JSON for alertInternalId [{}] from view [{}]", alertInternalId, typeConfig.getViewName());
+        String jsonString = alertRepository.fetchByAlertInternalId(jdbcTemplate, typeConfig.getViewName(), alertInternalId);
+
+        // Step 4 — parse JSON string into JsonNode
+        log.debug("Step 4 - Parsing JSON for alertInternalId [{}]", alertInternalId);
+        JsonNode json = parseJson(alertInternalId, jsonString);
+
+        // Step 5 — validate against the schema for this alert type
+        log.debug("Step 5 - Validating alertInternalId [{}] against schema [{}]", alertInternalId, typeConfig.getSchemaPath());
+        jsonSchemaValidator.validate(alertInternalId, typeConfig.getSchemaPath(), json);
+
+        log.info("Alert [{}] processed successfully (alertTypeId [{}])", alertInternalId, alertTypeId);
+        return new AlertResult(alertInternalId, json);
     }
 
     // -------------------------------------------------------------------------
     // Private helpers
     // -------------------------------------------------------------------------
 
-    private AlertResult processAlertWithView(String alertId, String viewName) {
-        log.info("Processing alert [{}] using view [{}]", alertId, viewName);
-
-        // Step 1 — query the DB view
-        log.debug("Step 1 - Querying view [{}] for alertId [{}]", viewName, alertId);
-        String jsonString = alertRepository.fetchJsonByAlertId(alertId, viewName);
-
-        // Step 2 — parse JSON string into JsonNode
-        log.debug("Step 2 - Parsing JSON for alertId [{}]", alertId);
-        JsonNode json = parseJson(alertId, jsonString);
-
-        // Step 3 — validate against the schema for this alert type
-        log.debug("Step 3 - Validating alertId [{}]", alertId);
-        jsonSchemaValidator.validate(alertId, json);
-
-        log.info("Alert [{}] processed successfully", alertId);
-        return new AlertResult(alertId, json);
+    private AlertTypeProperties resolveAlertTypeConfig(String alertTypeId) {
+        AlertTypeProperties config = alertTypes.get(alertTypeId);
+        if (config == null) {
+            throw new IllegalArgumentException(
+                "\n[alert-util] No configuration found for alertTypeId [" + alertTypeId + "].\n"
+                + "Register it in your application.yml:\n\n"
+                + "  alert-util:\n"
+                + "    alert-types:\n"
+                + "      \"" + alertTypeId + "\":\n"
+                + "        view-name: v_alert_" + alertTypeId + "\n"
+                + "        schema-path: schema/" + alertTypeId + "_schema.json\n"
+            );
+        }
+        return config;
     }
 
-    private JsonNode parseJson(String alertId, String jsonString) {
+    /**
+     * Resolves a JdbcTemplate for the given dbName.
+     * On first call: looks up the DataSource bean, wraps it in a JdbcTemplate, and caches it.
+     * On subsequent calls: returns the cached JdbcTemplate.
+     */
+    JdbcTemplate resolveJdbcTemplate(String dbName) {
+        return jdbcTemplateCache.computeIfAbsent(dbName, name -> {
+            log.info("alert-util: Resolving DataSource bean [{}] (first use)", name);
+            try {
+                DataSource dataSource = applicationContext.getBean(name, DataSource.class);
+                return new JdbcTemplate(dataSource);
+            } catch (Exception e) {
+                throw new IllegalStateException(
+                    "\n[alert-util] Could not find DataSource bean named [" + name + "].\n"
+                    + "The library expects a DataSource bean with this name in your Spring context.\n\n"
+                    + "Fix: Register a DataSource bean in your config class:\n\n"
+                    + "  @Bean(\"" + name + "\")\n"
+                    + "  @ConfigurationProperties(\"app.datasources." + name + "\")\n"
+                    + "  public DataSource " + name + "DataSource() {\n"
+                    + "      return DataSourceBuilder.create().build();\n"
+                    + "  }\n",
+                    e
+                );
+            }
+        });
+    }
+
+    private JsonNode parseJson(Long alertInternalId, String jsonString) {
         try {
             return objectMapper.readTree(jsonString);
         } catch (Exception e) {
             throw new AlertProcessingException(
-                    alertId, "DB view returned invalid JSON: " + e.getMessage(), e);
+                    alertInternalId, "DB view returned invalid JSON: " + e.getMessage(), e);
         }
     }
 }
