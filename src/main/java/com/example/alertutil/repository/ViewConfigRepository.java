@@ -5,6 +5,7 @@ import com.example.alertutil.config.AlertUtilProperties.AlertTypeProperties;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.core.ResultSetExtractor;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -71,7 +72,7 @@ public class ViewConfigRepository {
 
         Map<String, AlertTypeProperties> configs = new LinkedHashMap<>();
 
-        jdbcTemplate.query(sql, rs -> {
+        jdbcTemplate.query(sql, (ResultSetExtractor<Void>) rs -> {
             while (rs.next()) {
                 String alertType  = rs.getString(1);
                 String viewName   = rs.getString(2);
@@ -101,6 +102,7 @@ public class ViewConfigRepository {
                 props.setSchemaPath(schemaPath);
                 configs.put(alertType.trim(), props);
             }
+            return null;
         });
 
         if (configs.isEmpty()) {
