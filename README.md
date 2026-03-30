@@ -34,43 +34,40 @@ database you designate as the config source:
 CREATE TABLE alert_view_config (
     alert_type  VARCHAR2(50)  NOT NULL,
     view_name   VARCHAR2(200) NOT NULL,
-    schema_key  VARCHAR2(100) NOT NULL
+    schema_path VARCHAR2(500) NOT NULL
 );
 
 -- Example rows: alert types 10000–10002 share one view and schema;
 -- alert types 20000–20001 share a different view and schema
-INSERT INTO alert_view_config VALUES ('10000', 'v_alert_json_credit', 'credit');
-INSERT INTO alert_view_config VALUES ('10001', 'v_alert_json_credit', 'credit');
-INSERT INTO alert_view_config VALUES ('10002', 'v_alert_json_credit', 'credit');
-INSERT INTO alert_view_config VALUES ('20000', 'v_alert_json_equity', 'equity');
-INSERT INTO alert_view_config VALUES ('20001', 'v_alert_json_equity', 'equity');
+INSERT INTO alert_view_config VALUES ('10000', 'v_alert_json_credit', 'schema/credit_schema.json');
+INSERT INTO alert_view_config VALUES ('10001', 'v_alert_json_credit', 'schema/credit_schema.json');
+INSERT INTO alert_view_config VALUES ('10002', 'v_alert_json_credit', 'schema/credit_schema.json');
+INSERT INTO alert_view_config VALUES ('20000', 'v_alert_json_equity', 'schema/equity_schema.json');
+INSERT INTO alert_view_config VALUES ('20001', 'v_alert_json_equity', 'schema/equity_schema.json');
 ```
 
-`schema_key` is a logical key that maps to a classpath schema file via `schema-map` in YAML.
-Multiple alert types that share the same schema point to the same `schema_key` — no duplication.
+`schema_path` holds the full classpath path to the JSON schema file (e.g. `schema/credit_schema.json`).
+Multiple alert types that share the same schema simply store the same path — no YAML mapping needed.
 
 ### 3. Configure `application.yml`
 
 ```yaml
 alert-util:
   view-config-db-name: configDb           # DataSource bean name that holds the config table
-  view-config-table: alert_view_config    # table: (alert_type, view_name, schema_key)
-  schema-map:                             # schemaKey → classpath path to JSON schema file
-    credit: schema/credit_schema.json
-    equity: schema/equity_schema.json
+  view-config-table: alert_view_config    # table: (alert_type, view_name, schema_path)
 
   # Optional column name overrides (defaults shown)
   alert-internal-id-column: alert_internal_id
   json-column: alert_json
   alert-type-column: alert_type
   view-name-column: view_name
-  schema-key-column: schema_key
+  schema-path-column: schema_path
 ```
 
 ### 4. Add JSON schema files
 
-Place a schema file for each distinct `schema_key` in the consuming app's
-`src/main/resources/` at the path specified in `schema-map`:
+Place a schema file for each distinct `schema_path` in the consuming app's
+`src/main/resources/` at the path stored in the DB table:
 
 ```
 src/main/resources/
@@ -146,9 +143,9 @@ public class AlertController {
 2. `AlertUtilAutoConfiguration` validates required properties and resolves the `DataSource` bean named by `view-config-db-name`.
 3. `ViewConfigRepository` runs one SQL query against the config table:
    ```sql
-   SELECT alert_type, view_name, schema_key FROM alert_view_config
+   SELECT alert_type, view_name, schema_path FROM alert_view_config
    ```
-4. For each row, `schema_key` is resolved to a classpath path via `schema-map` in YAML.
+4. For each row, `schema_path` is read directly from the DB — no YAML lookup required.
 5. The result is an in-memory `Map<alertTypeId, {viewName, schemaPath}>` — held for the lifetime of the application. No further DB calls are made to the config table.
 
 ### Runtime
@@ -173,13 +170,12 @@ When `alertService.processAlert(dbName, alertInternalId, alertTypeId)` is called
 | Property | Required | Default | Description |
 |---|---|---|---|
 | `alert-util.view-config-db-name` | **Yes** | — | Name of the DataSource bean used to read the config table at startup |
-| `alert-util.view-config-table` | **Yes** | — | Table containing `(alert_type, view_name, schema_key)` rows |
-| `alert-util.schema-map` | **Yes** | — | Map of `schemaKey → classpath path` to JSON schema file |
+| `alert-util.view-config-table` | **Yes** | — | Table containing `(alert_type, view_name, schema_path)` rows |
 | `alert-util.alert-internal-id-column` | No | `alert_internal_id` | Column used to filter by alertInternalId in alert views |
 | `alert-util.json-column` | No | `alert_json` | Column holding the alert JSON (VARCHAR or CLOB) |
 | `alert-util.alert-type-column` | No | `alert_type` | Column name in the config table for alert type |
 | `alert-util.view-name-column` | No | `view_name` | Column name in the config table for view name |
-| `alert-util.schema-key-column` | No | `schema_key` | Column name in the config table for schema key |
+| `alert-util.schema-path-column` | No | `schema_path` | Column name in the config table for the classpath schema file path |
 
 ---
 

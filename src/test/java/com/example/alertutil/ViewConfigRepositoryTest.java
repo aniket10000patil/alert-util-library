@@ -31,11 +31,6 @@ class ViewConfigRepositoryTest {
 
     private ViewConfigRepository repository;
 
-    private static final Map<String, String> SCHEMA_MAP = Map.of(
-            "credit", "schema/credit_schema.json",
-            "equity", "schema/equity_schema.json"
-    );
-
     @BeforeEach
     void setUp() {
         repository = new ViewConfigRepository(
@@ -43,17 +38,21 @@ class ViewConfigRepositoryTest {
                 "alert_view_config",
                 "alert_type",
                 "view_name",
-                "schema_key"
+                "schema_path"
         );
     }
 
     @Test
     void loadAlertTypeConfigs_multipleTypesShareView_resolvesCorrectly() throws SQLException {
-        // Simulate 3 rows: 10000, 10001, 10002 all → credit view + credit schema
+        // 3 alert types sharing the same view and schema path
         when(resultSet.next()).thenReturn(true, true, true, false);
         when(resultSet.getString(1)).thenReturn("10000", "10001", "10002");
         when(resultSet.getString(2)).thenReturn("v_alert_json_credit", "v_alert_json_credit", "v_alert_json_credit");
-        when(resultSet.getString(3)).thenReturn("credit", "credit", "credit");
+        when(resultSet.getString(3)).thenReturn(
+                "schema/credit_schema.json",
+                "schema/credit_schema.json",
+                "schema/credit_schema.json"
+        );
 
         when(jdbcTemplate.query(anyString(), any(ResultSetExtractor.class)))
                 .thenAnswer(inv -> {
@@ -62,7 +61,7 @@ class ViewConfigRepositoryTest {
                     return null;
                 });
 
-        Map<String, AlertTypeProperties> configs = repository.loadAlertTypeConfigs(SCHEMA_MAP);
+        Map<String, AlertTypeProperties> configs = repository.loadAlertTypeConfigs();
 
         assertThat(configs).hasSize(3);
         assertThat(configs).containsKeys("10000", "10001", "10002");
@@ -71,7 +70,6 @@ class ViewConfigRepositoryTest {
         assertThat(type10000.getViewName()).isEqualTo("v_alert_json_credit");
         assertThat(type10000.getSchemaPath()).isEqualTo("schema/credit_schema.json");
 
-        // All three share the same view and schema path
         assertThat(configs.get("10001").getViewName()).isEqualTo("v_alert_json_credit");
         assertThat(configs.get("10001").getSchemaPath()).isEqualTo("schema/credit_schema.json");
         assertThat(configs.get("10002").getViewName()).isEqualTo("v_alert_json_credit");
@@ -79,11 +77,11 @@ class ViewConfigRepositoryTest {
     }
 
     @Test
-    void loadAlertTypeConfigs_differentSchemaKeys_resolveToDifferentSchemaPaths() throws SQLException {
+    void loadAlertTypeConfigs_differentSchemaPaths_resolvesCorrectly() throws SQLException {
         when(resultSet.next()).thenReturn(true, true, false);
         when(resultSet.getString(1)).thenReturn("10000", "20000");
         when(resultSet.getString(2)).thenReturn("v_alert_json_credit", "v_alert_json_equity");
-        when(resultSet.getString(3)).thenReturn("credit", "equity");
+        when(resultSet.getString(3)).thenReturn("schema/credit_schema.json", "schema/equity_schema.json");
 
         when(jdbcTemplate.query(anyString(), any(ResultSetExtractor.class)))
                 .thenAnswer(inv -> {
@@ -92,37 +90,17 @@ class ViewConfigRepositoryTest {
                     return null;
                 });
 
-        Map<String, AlertTypeProperties> configs = repository.loadAlertTypeConfigs(SCHEMA_MAP);
+        Map<String, AlertTypeProperties> configs = repository.loadAlertTypeConfigs();
 
-        assertThat(configs.get("10000").getSchemaPath()).isEqualTo("schema/credit_schema.json");
-        assertThat(configs.get("20000").getSchemaPath()).isEqualTo("schema/equity_schema.json");
         assertThat(configs.get("10000").getViewName()).isEqualTo("v_alert_json_credit");
+        assertThat(configs.get("10000").getSchemaPath()).isEqualTo("schema/credit_schema.json");
         assertThat(configs.get("20000").getViewName()).isEqualTo("v_alert_json_equity");
-    }
-
-    @Test
-    void loadAlertTypeConfigs_unknownSchemaKey_throwsIllegalStateException() throws SQLException {
-        when(resultSet.next()).thenReturn(true, false);
-        when(resultSet.getString(1)).thenReturn("10000");
-        when(resultSet.getString(2)).thenReturn("v_alert_json_credit");
-        when(resultSet.getString(3)).thenReturn("unknown_key");  // not in schema-map
-
-        when(jdbcTemplate.query(anyString(), any(ResultSetExtractor.class)))
-                .thenAnswer(inv -> {
-                    ResultSetExtractor<Void> extractor = inv.getArgument(1);
-                    extractor.extractData(resultSet);
-                    return null;
-                });
-
-        assertThatThrownBy(() -> repository.loadAlertTypeConfigs(SCHEMA_MAP))
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("unknown_key")
-                .hasMessageContaining("schema-map");
+        assertThat(configs.get("20000").getSchemaPath()).isEqualTo("schema/equity_schema.json");
     }
 
     @Test
     void loadAlertTypeConfigs_emptyTable_throwsIllegalStateException() throws SQLException {
-        when(resultSet.next()).thenReturn(false);  // no rows
+        when(resultSet.next()).thenReturn(false);
 
         when(jdbcTemplate.query(anyString(), any(ResultSetExtractor.class)))
                 .thenAnswer(inv -> {
@@ -131,7 +109,7 @@ class ViewConfigRepositoryTest {
                     return null;
                 });
 
-        assertThatThrownBy(() -> repository.loadAlertTypeConfigs(SCHEMA_MAP))
+        assertThatThrownBy(() -> repository.loadAlertTypeConfigs())
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("alert_view_config")
                 .hasMessageContaining("no rows");

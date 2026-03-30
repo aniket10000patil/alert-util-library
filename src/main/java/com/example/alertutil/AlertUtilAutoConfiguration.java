@@ -31,10 +31,7 @@ import java.util.Map;
  *
  *   alert-util:
  *     view-config-db-name: configDb          # DataSource bean that holds the config table
- *     view-config-table: alert_view_config   # table: (alert_type, view_name, schema_key)
- *     schema-map:
- *       credit: schema/credit_schema.json
- *       equity: schema/equity_schema.json
+ *     view-config-table: alert_view_config   # table: (alert_type, view_name, schema_path)
  *
  * At startup the library reads all rows from the view config table and builds an in-memory
  * map of alertTypeId → (viewName, schemaPath). At runtime the caller passes the alertTypeId:
@@ -113,10 +110,10 @@ public class AlertUtilAutoConfiguration {
                 properties.getViewConfigTable(),
                 properties.getAlertTypeColumn(),
                 properties.getViewNameColumn(),
-                properties.getSchemaKeyColumn()
+                properties.getSchemaPathColumn()
         );
 
-        return viewConfigRepository.loadAlertTypeConfigs(properties.getSchemaMap());
+        return viewConfigRepository.loadAlertTypeConfigs();
     }
 
     private DataSource resolveDataSource(ApplicationContext context, String beanName) {
@@ -148,9 +145,6 @@ public class AlertUtilAutoConfiguration {
         if (isBlank(properties.getViewConfigTable()))
             errors.add("alert-util.view-config-table is required");
 
-        if (properties.getSchemaMap() == null || properties.getSchemaMap().isEmpty())
-            errors.add("alert-util.schema-map must have at least one entry");
-
         if (!errors.isEmpty()) {
             throw new IllegalStateException(
                 "\n[alert-util] Missing required configuration:\n  - "
@@ -159,9 +153,6 @@ public class AlertUtilAutoConfiguration {
                 + "  alert-util:\n"
                 + "    view-config-db-name: configDb\n"
                 + "    view-config-table: alert_view_config\n"
-                + "    schema-map:\n"
-                + "      credit: schema/credit_schema.json\n"
-                + "      equity: schema/equity_schema.json\n"
             );
         }
     }
